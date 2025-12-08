@@ -449,6 +449,9 @@ def main():
     logger.info(f"Date range: {START_DATE} to {END_DATE}")
     logger.info("=" * 60)
 
+    # Ensure data directory exists
+    os.makedirs(DATA_DIR, exist_ok=True)
+
     # Step 1: Get MSCI World constituents
     tickers = get_msci_world_constituents()
     pd.DataFrame({"Ticker": tickers}).to_csv(os.path.join(DATA_DIR, "ticker_list.csv"), index=False)
