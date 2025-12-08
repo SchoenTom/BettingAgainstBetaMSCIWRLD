@@ -285,7 +285,7 @@ def download_risk_free_rate(start_date, end_date):
 
     try:
         data = yf.download(
-            '^IRX',
+            ['^IRX'],  # Pass as list to ensure consistent return format
             start=start_date,
             end=end_date,
             interval='1d',
@@ -295,18 +295,24 @@ def download_risk_free_rate(start_date, end_date):
         if data.empty:
             raise RuntimeError("No ^IRX data returned; cannot compute risk-free rate.")
 
+        logger.debug(f"RF data columns type: {type(data.columns)}, columns: {data.columns.tolist()[:5]}")
+
         # Get close prices - handle both MultiIndex and regular columns (yfinance API varies)
         if isinstance(data.columns, pd.MultiIndex):
-            # MultiIndex columns: ('Close', '^IRX'), etc.
-            rf_daily = data['Close'].iloc[:, 0].copy()
-        elif 'Close' in data.columns:
+            # Flatten MultiIndex columns: ('Close', '^IRX') -> look for 'Close'
+            data.columns = data.columns.get_level_values(0)
+
+        if 'Close' in data.columns:
             rf_daily = data['Close'].copy()
         else:
             rf_daily = data.iloc[:, 0].copy()
 
-        # Ensure it's a Series
+        # Ensure it's a Series (not DataFrame)
         if isinstance(rf_daily, pd.DataFrame):
             rf_daily = rf_daily.iloc[:, 0]
+
+        # Convert to numeric, coercing errors
+        rf_daily = pd.to_numeric(rf_daily, errors='coerce')
 
         # Resample to month-end
         rf_daily.index = pd.to_datetime(rf_daily.index)
@@ -316,7 +322,7 @@ def download_risk_free_rate(start_date, end_date):
         # ^IRX is quoted as percentage (e.g., 4.5 means 4.5%)
         # Monthly rate = (1 + annual_rate/100)^(1/12) - 1
         rf_monthly_decimal = (1 + rf_monthly / 100) ** (1/12) - 1
-        rf_monthly_decimal = rf_monthly_decimal.rename('RF_Rate')
+        rf_monthly_decimal.name = 'RF_Rate'
 
         logger.info(f"Risk-free rate data from {rf_monthly_decimal.index.min()} to {rf_monthly_decimal.index.max()}")
 
@@ -324,6 +330,8 @@ def download_risk_free_rate(start_date, end_date):
 
     except Exception as e:
         logger.warning(f"Error downloading risk-free rate: {e}")
+        import traceback
+        logger.debug(traceback.format_exc())
         return None
 
 
