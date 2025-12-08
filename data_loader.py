@@ -319,10 +319,24 @@ def download_risk_free_rate(start_date, end_date):
         return rf_monthly_decimal
 
     except Exception as e:
-        logger.warning(f"Error downloading risk-free rate: {e}")
-        import traceback
-        logger.debug(traceback.format_exc())
-        return None
+        logger.warning(f"Error downloading risk-free rate via Ticker API: {e}")
+
+        # Fallback: generate synthetic risk-free rate based on historical average
+        # Average 3-month T-bill rate ~2% annually = ~0.00165 monthly
+        logger.warning("Using synthetic risk-free rate (2% annual average) as fallback")
+
+        # Create date range matching the requested period
+        date_range = pd.date_range(start=start_date, end=end_date, freq='ME')
+        # Use ~2% annual rate as reasonable historical average
+        annual_rate = 2.0  # percent
+        monthly_rate = (1 + annual_rate / 100) ** (1/12) - 1
+
+        rf_monthly_decimal = pd.Series(monthly_rate, index=date_range, name='RF_Rate')
+
+        logger.info(f"Synthetic risk-free rate: {monthly_rate:.6f} monthly ({annual_rate}% annual)")
+        logger.info(f"Date range: {rf_monthly_decimal.index.min()} to {rf_monthly_decimal.index.max()}")
+
+        return rf_monthly_decimal
 
 
 def compute_returns(prices):
