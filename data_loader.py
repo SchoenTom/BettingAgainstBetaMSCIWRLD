@@ -284,24 +284,14 @@ def download_risk_free_rate(start_date, end_date):
     logger.info("Downloading risk-free rate (^IRX)...")
 
     try:
-        data = yf.download(
-            ['^IRX'],  # Pass as list to ensure consistent return format
-            start=start_date,
-            end=end_date,
-            interval='1d',
-            progress=False
-        )
+        # Use Ticker API instead of download() for more reliable single-ticker fetching
+        ticker = yf.Ticker('^IRX')
+        data = ticker.history(start=start_date, end=end_date, interval='1d')
 
         if data.empty:
             raise RuntimeError("No ^IRX data returned; cannot compute risk-free rate.")
 
-        logger.debug(f"RF data columns type: {type(data.columns)}, columns: {data.columns.tolist()[:5]}")
-
-        # Get close prices - handle both MultiIndex and regular columns (yfinance API varies)
-        if isinstance(data.columns, pd.MultiIndex):
-            # Flatten MultiIndex columns: ('Close', '^IRX') -> look for 'Close'
-            data.columns = data.columns.get_level_values(0)
-
+        # Get close prices
         if 'Close' in data.columns:
             rf_daily = data['Close'].copy()
         else:
