@@ -599,6 +599,9 @@ def main():
     logger.info("Starting Illustration Generation")
     logger.info("=" * 60)
 
+    # Ensure output directory exists BEFORE any file operations
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+
     # Setup plot parameters
     setup_plot()
 

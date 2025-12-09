@@ -564,6 +564,9 @@ def main():
     logger.info("Starting Backtest Analysis")
     logger.info("=" * 60)
 
+    # Ensure output directory exists BEFORE any file operations
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+
     # Load data
     bab_df, benchmark = load_data()
 
