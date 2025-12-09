@@ -133,7 +133,7 @@ def construct_bab_portfolios(excess_returns, betas):
 
     if len(common_dates) == 0:
         logger.warning("No common dates found between returns and betas!")
-        logger.info(f"Returns date range: {returns.index.min()} to {returns.index.max()}")
+        logger.info(f"Returns date range: {excess_returns.index.min()} to {excess_returns.index.max()}")
         logger.info(f"Betas date range: {betas.index.min()} to {betas.index.max()}")
         return pd.DataFrame(columns=[
             'BAB_Return', 'Q1_Mean_Beta', 'Q5_Mean_Beta',
@@ -143,7 +143,7 @@ def construct_bab_portfolios(excess_returns, betas):
 
     if len(common_stocks) == 0:
         logger.warning("No common stocks found between returns and betas!")
-        logger.info(f"Returns columns sample: {list(returns.columns[:5])}")
+        logger.info(f"Returns columns sample: {list(excess_returns.columns[:5])}")
         logger.info(f"Betas columns sample: {list(betas.columns[:5])}")
         return pd.DataFrame(columns=[
             'BAB_Return', 'Q1_Mean_Beta', 'Q5_Mean_Beta',

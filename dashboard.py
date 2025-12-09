@@ -460,7 +460,7 @@ def display_detailed_metrics(summary):
         st.subheader("Risk-Adjusted & Relative Metrics")
         metrics_rel = {
             "Beta to Benchmark": format_number(s['Beta_to_Benchmark']),
-            "Alpha (Annualized)": format_percent(s['Alpha']),
+            "Alpha (Annualized)": format_percent(s['Alpha_Annualized']),
             "Information Ratio": format_number(s['Information_Ratio']),
             "---": "---",
             "Benchmark Ann Return": format_percent(s['Benchmark_Ann_Return']),
