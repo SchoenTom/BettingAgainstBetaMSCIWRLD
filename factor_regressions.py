@@ -93,6 +93,9 @@ def format_stars(p):
 
 
 def main():
+    # Ensure output directory exists BEFORE any file operations
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+
     bab_excess, mkt_excess = load_excess_series()
     res = run_capm(bab_excess, mkt_excess)
 

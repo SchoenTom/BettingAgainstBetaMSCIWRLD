@@ -464,6 +464,9 @@ def main():
     logger.info("Starting Portfolio Construction")
     logger.info("=" * 60)
 
+    # Ensure output directory exists BEFORE any file operations
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+
     # Load data
     returns, excess_returns, betas = load_data()
 
