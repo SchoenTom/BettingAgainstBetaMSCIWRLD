@@ -295,14 +295,18 @@ def download_risk_free_rate(start_date, end_date):
         if data.empty:
             raise RuntimeError("No ^IRX data returned; cannot compute risk-free rate.")
 
-        # Get close prices
-        if isinstance(data, pd.DataFrame):
-            if 'Close' in data.columns:
-                rf_daily = data['Close'].copy()
-            else:
-                rf_daily = data.iloc[:, 0].copy()
+        # Get close prices - handle MultiIndex columns from newer yfinance
+        if isinstance(data.columns, pd.MultiIndex):
+            # MultiIndex columns: ('Close', '^IRX'), etc.
+            rf_daily = data['Close'].iloc[:, 0].copy()
+        elif 'Close' in data.columns:
+            rf_daily = data['Close'].copy()
         else:
-            rf_daily = pd.Series(dtype=float)
+            rf_daily = data.iloc[:, 0].copy()
+
+        # Ensure it's a Series
+        if isinstance(rf_daily, pd.DataFrame):
+            rf_daily = rf_daily.iloc[:, 0]
 
         # Resample to month-end
         rf_daily.index = pd.to_datetime(rf_daily.index)
