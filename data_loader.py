@@ -2,7 +2,7 @@
 data_loader.py - Download and prepare data for Betting-Against-Beta strategy
 
 This script:
-1. Downloads current MSCI World proxy constituents via yfinance
+1. Downloads MSCI World constituents (~1,400 stocks) from iShares URTH ETF
 2. Fetches monthly adjusted close prices for all stocks and MSCI World proxy
 3. Downloads and processes risk-free rate (^IRX)
 4. Computes monthly returns, excess returns, and rolling 60-month betas
@@ -33,22 +33,38 @@ ROLLING_WINDOW = 60  # months for beta calculation
 MSCI_WORLD_PROXY = 'URTH'  # iShares MSCI World ETF
 
 
-def get_msci_world_constituents():
+def get_msci_world_constituents(use_expanded: bool = True, validate: bool = False):
     """
     Get MSCI World constituent tickers.
 
     Strategy:
-    1. Try to fetch major developed market stocks from well-known indices
-    2. Use URTH ETF info if available
-    3. Fall back to curated list of major MSCI World constituents
+    1. If use_expanded=True: Use msci_ticker_downloader to get ~500+ tickers
+       from iShares URTH holdings + comprehensive curated list
+    2. If use_expanded=False: Use minimal curated list (~159 tickers)
+
+    Args:
+        use_expanded: If True, use the expanded ticker downloader (recommended)
+        validate: If True, validate each ticker with yfinance (slower but ensures data availability)
 
     Returns:
         list: List of valid stock tickers
     """
     logger.info("Fetching MSCI World constituent tickers...")
 
-    # Major MSCI World constituents - curated list covering major developed markets
-    # This represents a representative sample of large-cap stocks across developed markets
+    if use_expanded:
+        try:
+            from msci_ticker_downloader import get_msci_world_tickers
+            tickers = get_msci_world_tickers(validate=validate, use_cache=True)
+            logger.info(f"Loaded {len(tickers)} tickers from expanded MSCI World downloader")
+            return tickers
+        except ImportError as e:
+            logger.warning(f"Could not import msci_ticker_downloader: {e}")
+            logger.warning("Falling back to curated list...")
+        except Exception as e:
+            logger.warning(f"Error using expanded downloader: {e}")
+            logger.warning("Falling back to curated list...")
+
+    # Fallback: Major MSCI World constituents - curated list covering major developed markets
     msci_world_tickers = [
         # United States - Large Cap
         'AAPL', 'MSFT', 'GOOGL', 'GOOG', 'AMZN', 'NVDA', 'META', 'TSLA', 'BRK-B',
@@ -96,7 +112,7 @@ def get_msci_world_constituents():
     # Remove duplicates while preserving order
     msci_world_tickers = list(dict.fromkeys(msci_world_tickers))
 
-    logger.info(f"Initial ticker list contains {len(msci_world_tickers)} symbols")
+    logger.info(f"Using curated list with {len(msci_world_tickers)} symbols")
 
     return msci_world_tickers
 
