@@ -25,12 +25,16 @@ warnings.filterwarnings('ignore')
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Configuration
-DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data')
-START_DATE = '2000-01-01'
-END_DATE = datetime.today().strftime('%Y-%m-%d')
-ROLLING_WINDOW = 60  # months for beta calculation
-MSCI_WORLD_PROXY = 'URTH'  # iShares MSCI World ETF
+# Configuration - import from config.py for consistency
+try:
+    from config import START_DATE, END_DATE, ROLLING_WINDOW, DATA_DIR, MSCI_WORLD_PROXY
+except ImportError:
+    # Fallback if config.py not available
+    DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data')
+    START_DATE = '1995-01-01'  # F&P replication start
+    END_DATE = '2014-01-01'    # F&P publication year - NO look-ahead!
+    ROLLING_WINDOW = 60  # months for beta calculation
+    MSCI_WORLD_PROXY = 'URTH'  # iShares MSCI World ETF
 
 
 def get_msci_world_constituents(use_expanded: bool = True, validate: bool = False):
@@ -400,6 +404,14 @@ def compute_excess_returns(returns, rf_rate):
         else:
             rf_rate = rf_rate.squeeze()
     rf_rate = rf_rate.rename('RF_Rate')
+
+    # Remove timezone info to avoid tz-naive/tz-aware mismatch
+    if hasattr(returns.index, 'tz') and returns.index.tz is not None:
+        returns = returns.copy()
+        returns.index = returns.index.tz_localize(None)
+    if hasattr(rf_rate.index, 'tz') and rf_rate.index.tz is not None:
+        rf_rate = rf_rate.copy()
+        rf_rate.index = rf_rate.index.tz_localize(None)
 
     # Align dates
     common_dates = returns.index.intersection(rf_rate.index)
