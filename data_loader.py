@@ -35,7 +35,9 @@ logger = logging.getLogger(__name__)
 from config import (
     START_DATE, END_DATE, ROLLING_WINDOW, MIN_PERIODS_BETA,
     DATA_DIR, BENCHMARK_TICKER, MSCI_WORLD_TICKERS,
-    DOWNLOAD_BATCH_SIZE, ensure_directories
+    DOWNLOAD_BATCH_SIZE, ensure_directories,
+    MIN_DATA_COVERAGE, REQUIRE_FULL_HISTORY,
+    MSCI_WORLD_PROXIES, USE_COMPOSITE_MSCI
 )
 
 
@@ -118,15 +120,47 @@ def download_monthly_prices(tickers, start_date, end_date):
     # Resample to month-end for consistent dates
     all_data = all_data.resample('ME').last()
 
-    # Drop columns with too many missing values (> 50%)
-    missing_pct = all_data.isna().sum() / len(all_data)
-    valid_cols = missing_pct[missing_pct < 0.5].index
-    dropped = len(all_data.columns) - len(valid_cols)
-    if dropped > 0:
-        logger.info(f"Dropped {dropped} tickers with >50% missing data")
-    all_data = all_data[valid_cols]
+    # Strict data filtering for continuous data
+    logger.info("Applying strict data quality filters...")
+    initial_count = len(all_data.columns)
 
-    logger.info(f"Downloaded prices shape: {all_data.shape}")
+    # Step 1: Filter for minimum data coverage (default 95%)
+    coverage = all_data.notna().sum() / len(all_data)
+    valid_coverage = coverage[coverage >= MIN_DATA_COVERAGE].index
+    all_data = all_data[valid_coverage]
+    logger.info(f"After {MIN_DATA_COVERAGE*100:.0f}% coverage filter: {len(all_data.columns)} tickers "
+                f"(dropped {initial_count - len(all_data.columns)})")
+
+    # Step 2: Require data from start date (if configured)
+    if REQUIRE_FULL_HISTORY:
+        # Check if first valid date is within 3 months of start date
+        first_valid = all_data.apply(lambda x: x.first_valid_index())
+        start_threshold = pd.Timestamp(START_DATE) + pd.DateOffset(months=3)
+        valid_start = first_valid[first_valid <= start_threshold].index
+        before_count = len(all_data.columns)
+        all_data = all_data[valid_start]
+        logger.info(f"After start date filter: {len(all_data.columns)} tickers "
+                    f"(dropped {before_count - len(all_data.columns)})")
+
+    # Step 3: Check for data gaps (no more than 2 consecutive missing months)
+    def has_large_gaps(series, max_gap=2):
+        is_na = series.isna()
+        if not is_na.any():
+            return False
+        # Count consecutive NaNs
+        gaps = is_na.astype(int).groupby((~is_na).cumsum()).sum()
+        return gaps.max() > max_gap
+
+    no_gaps = [col for col in all_data.columns if not has_large_gaps(all_data[col])]
+    before_count = len(all_data.columns)
+    all_data = all_data[no_gaps]
+    logger.info(f"After gap filter: {len(all_data.columns)} tickers "
+                f"(dropped {before_count - len(all_data.columns)})")
+
+    # Forward fill any remaining small gaps
+    all_data = all_data.ffill(limit=2)
+
+    logger.info(f"Final dataset: {all_data.shape}")
     logger.info(f"Date range: {all_data.index.min()} to {all_data.index.max()}")
 
     if failed_tickers:
@@ -187,6 +221,119 @@ def download_benchmark(start_date, end_date, ticker=BENCHMARK_TICKER):
     except Exception as e:
         logger.error(f"Error downloading benchmark: {e}")
         raise
+
+
+def download_msci_world_proxy(start_date, end_date):
+    """
+    Download and construct MSCI World proxy from weighted regional indices.
+
+    Uses a market-cap weighted combination:
+    - S&P 500 (USA): ~60%
+    - STOXX Europe 600: ~25%
+    - Nikkei 225 (Japan): ~10%
+    - S&P/TSX (Canada): ~5%
+
+    If composite construction fails, falls back to S&P 500.
+
+    Returns:
+        pd.Series: Monthly returns for MSCI World proxy
+    """
+    logger.info("Constructing MSCI World proxy from regional indices...")
+
+    if not USE_COMPOSITE_MSCI:
+        logger.info("Composite MSCI disabled, using S&P 500 as benchmark")
+        prices = download_benchmark(start_date, end_date, BENCHMARK_TICKER)
+        prices.name = 'MSCI_World'
+        return prices
+
+    index_returns = {}
+    available_weight = 0.0
+
+    for ticker, weight in MSCI_WORLD_PROXIES.items():
+        try:
+            data = yf.download(
+                ticker,
+                start=start_date,
+                end=end_date,
+                interval='1mo',
+                auto_adjust=True,
+                progress=False
+            )
+
+            if data.empty:
+                logger.warning(f"No data for {ticker}, skipping")
+                continue
+
+            # Extract Close prices
+            if isinstance(data.columns, pd.MultiIndex):
+                prices = data['Close'].iloc[:, 0].copy()
+            elif 'Close' in data.columns:
+                prices = data['Close'].copy()
+            else:
+                prices = data.iloc[:, 0].copy()
+
+            if isinstance(prices, pd.DataFrame):
+                prices = prices.iloc[:, 0]
+
+            # Resample to month-end
+            prices.index = pd.to_datetime(prices.index)
+            prices = prices.resample('ME').last()
+
+            # Compute returns
+            returns = prices.pct_change().dropna()
+
+            if len(returns) > 0:
+                index_returns[ticker] = returns
+                available_weight += weight
+                logger.info(f"  {ticker}: {len(returns)} months, weight={weight:.0%}")
+
+        except Exception as e:
+            logger.warning(f"Failed to download {ticker}: {e}")
+            continue
+
+    if not index_returns:
+        logger.warning("No regional indices available, falling back to S&P 500")
+        prices = download_benchmark(start_date, end_date, BENCHMARK_TICKER)
+        prices.name = 'MSCI_World'
+        return prices
+
+    # Align all indices to common dates
+    returns_df = pd.DataFrame(index_returns)
+    common_dates = returns_df.dropna().index
+
+    if len(common_dates) < 12:
+        logger.warning("Too few common dates, falling back to S&P 500")
+        prices = download_benchmark(start_date, end_date, BENCHMARK_TICKER)
+        prices.name = 'MSCI_World'
+        return prices
+
+    # Re-weight based on available indices
+    weights = {}
+    for ticker in returns_df.columns:
+        original_weight = MSCI_WORLD_PROXIES.get(ticker, 0)
+        weights[ticker] = original_weight / available_weight
+
+    logger.info(f"Re-weighted composition: {weights}")
+
+    # Compute weighted composite returns
+    composite_returns = pd.Series(0.0, index=common_dates)
+    for ticker, weight in weights.items():
+        composite_returns += returns_df.loc[common_dates, ticker] * weight
+
+    composite_returns.name = 'MSCI_World'
+
+    # Convert returns to price series (starting at 100)
+    composite_prices = (1 + composite_returns).cumprod() * 100
+    # Add a starting price point
+    first_date = composite_prices.index[0] - pd.DateOffset(months=1)
+    composite_prices.loc[first_date] = 100.0
+    composite_prices = composite_prices.sort_index()
+    composite_prices.name = 'MSCI_World'
+
+    logger.info(f"MSCI World proxy: {len(composite_prices)} months")
+    logger.info(f"Annualized return: {composite_returns.mean() * 12 * 100:.2f}%")
+
+    return composite_prices
 
 
 def download_risk_free_rate(start_date, end_date):
@@ -398,44 +545,61 @@ def main():
     # Step 2: Download stock prices
     stock_prices = download_monthly_prices(tickers, START_DATE, END_DATE)
 
-    # Step 3: Download benchmark
-    benchmark_prices = download_benchmark(START_DATE, END_DATE)
+    # Step 3: Download benchmark for beta calculation (S&P 500)
+    logger.info("Downloading beta calculation benchmark (S&P 500)...")
+    beta_benchmark_prices = download_benchmark(START_DATE, END_DATE, BENCHMARK_TICKER)
 
-    # Step 4: Download risk-free rate
+    # Step 4: Download MSCI World proxy for performance comparison
+    msci_world_prices = download_msci_world_proxy(START_DATE, END_DATE)
+
+    # Step 5: Download risk-free rate
     rf_rate = download_risk_free_rate(START_DATE, END_DATE)
 
-    # Step 5: Compute returns
+    # Step 6: Compute returns
     stock_returns = compute_returns(stock_prices)
 
-    benchmark_df = benchmark_prices.to_frame() if isinstance(benchmark_prices, pd.Series) else benchmark_prices
-    benchmark_returns = compute_returns(benchmark_df).iloc[:, 0]
-    benchmark_returns.name = 'MSCI_World'
+    # Beta benchmark returns (S&P 500)
+    beta_bench_df = beta_benchmark_prices.to_frame() if isinstance(beta_benchmark_prices, pd.Series) else beta_benchmark_prices
+    beta_benchmark_returns = compute_returns(beta_bench_df).iloc[:, 0]
+    beta_benchmark_returns.name = 'Beta_Benchmark'
 
-    # Step 6: Compute excess returns
+    # MSCI World proxy returns
+    msci_df = msci_world_prices.to_frame() if isinstance(msci_world_prices, pd.Series) else msci_world_prices
+    msci_world_returns = compute_returns(msci_df).iloc[:, 0]
+    msci_world_returns.name = 'MSCI_World'
+
+    # Step 7: Compute excess returns
     stock_excess_returns = compute_excess_returns(stock_returns, rf_rate)
-    benchmark_excess_returns = compute_excess_returns(benchmark_returns.to_frame(), rf_rate).iloc[:, 0]
-    benchmark_excess_returns.name = 'MSCI_World'
 
-    # Step 7: Compute rolling betas
+    # Beta benchmark excess returns (used for beta calculation)
+    beta_benchmark_excess = compute_excess_returns(beta_benchmark_returns.to_frame(), rf_rate).iloc[:, 0]
+    beta_benchmark_excess.name = 'Beta_Benchmark'
+
+    # MSCI World excess returns (used for performance comparison)
+    msci_world_excess = compute_excess_returns(msci_world_returns.to_frame(), rf_rate).iloc[:, 0]
+    msci_world_excess.name = 'MSCI_World'
+
+    # Step 8: Compute rolling betas (vs S&P 500)
     logger.info(f"Beta estimation: {ROLLING_WINDOW}-month rolling window, min {MIN_PERIODS_BETA} periods")
-    rolling_betas = compute_rolling_betas(stock_excess_returns, benchmark_excess_returns)
+    logger.info("Using S&P 500 as beta benchmark (highly correlated with MSCI World)")
+    rolling_betas = compute_rolling_betas(stock_excess_returns, beta_benchmark_excess)
 
-    # Step 8: Save all outputs
+    # Step 9: Save all outputs
     logger.info("Saving all data files...")
 
-    # Combine stock and benchmark prices
+    # Combine stock and MSCI World prices
     all_prices = stock_prices.copy()
-    all_prices['MSCI_World'] = benchmark_prices
+    all_prices['MSCI_World'] = msci_world_prices
     save_data(all_prices, 'monthly_prices.csv')
 
-    # Combine stock and benchmark returns
+    # Combine stock and MSCI World returns
     all_returns = stock_returns.copy()
-    all_returns['MSCI_World'] = benchmark_returns
+    all_returns['MSCI_World'] = msci_world_returns
     save_data(all_returns, 'monthly_returns.csv')
 
-    # Combine stock and benchmark excess returns
+    # Combine stock and MSCI World excess returns
     all_excess_returns = stock_excess_returns.copy()
-    all_excess_returns['MSCI_World'] = benchmark_excess_returns
+    all_excess_returns['MSCI_World'] = msci_world_excess
     save_data(all_excess_returns, 'monthly_excess_returns.csv')
 
     # Save risk-free rate

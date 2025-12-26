@@ -190,12 +190,38 @@ def construct_bab_portfolios(excess_returns, betas):
         if pd.isna(beta_L) or pd.isna(beta_H) or beta_L <= 0 or beta_H <= 0:
             continue
 
-        # Beta-scaled BAB excess return (Frazzini-Pedersen methodology)
-        bab_excess_return = (1.0 / beta_L) * q1_return - (1.0 / beta_H) * q5_return
+        # Beta-Neutral BAB with Normalized Leverage
+        #
+        # Original F&P formula: (1/β_L)*r_L - (1/β_H)*r_H
+        # Creates ex-ante beta = 0, but has implicit long bias (~$0.96 net long)
+        #
+        # Fix: Normalize total gross exposure to $2 (=$1 long + $1 short equivalent)
+        # This maintains beta-neutrality while controlling leverage
+        #
+        # Raw weights: w_L_raw = 1/β_L, w_H_raw = 1/β_H
+        # Gross exposure: w_L_raw + w_H_raw
+        # Normalized weights: w_L = 2 * w_L_raw / (w_L_raw + w_H_raw)
+        #                     w_H = 2 * w_H_raw / (w_L_raw + w_H_raw)
+        # This ensures: w_L + w_H = 2 (total gross = $2)
+        # And: w_L/β_L = w_H/β_H (beta neutral)
 
-        # Ex-ante beta diagnostic
-        beta_ex_ante = (1.0 / beta_L) * q1_mean_beta - (1.0 / beta_H) * q5_mean_beta
-        # Should be close to 0: (1/beta_L)*beta_L - (1/beta_H)*beta_H = 1 - 1 = 0
+        w_L_raw = 1.0 / beta_L
+        w_H_raw = 1.0 / beta_H
+        gross_raw = w_L_raw + w_H_raw
+
+        # Normalize to $2 gross exposure ($1 equivalent per leg)
+        w_L = 2.0 * w_L_raw / gross_raw  # Normalized long weight
+        w_H = 2.0 * w_H_raw / gross_raw  # Normalized short weight
+
+        # Beta-neutral BAB return with controlled leverage
+        bab_excess_return = w_L * q1_return - w_H * q5_return
+
+        # Ex-ante beta should be ~0 (beta-neutral)
+        beta_ex_ante = w_L * q1_mean_beta - w_H * q5_mean_beta
+
+        # Track dollar weights for diagnostics
+        dollar_long = w_L
+        dollar_short = w_H
 
         # Store results
         results.append({
@@ -213,6 +239,9 @@ def construct_bab_portfolios(excess_returns, betas):
             'Beta_L': beta_L,
             'Beta_H': beta_H,
             'Beta_BAB_ExAnte': beta_ex_ante,
+            'Dollar_Long': dollar_long,
+            'Dollar_Short': dollar_short,
+            'Dollar_Net': dollar_long - dollar_short,  # Should be 0 for dollar-neutral
         })
 
         # Track tickers used
@@ -350,6 +379,18 @@ def print_summary(bab_df, quintile_df):
     print(f"Average Q1 (Low) Beta:  {bab_df['Q1_Mean_Beta'].mean():.3f}")
     print(f"Average Q5 (High) Beta: {bab_df['Q5_Mean_Beta'].mean():.3f}")
     print(f"Average Beta Spread:    {bab_df['Beta_Spread'].mean():.3f}")
+
+    print("\n--- Leverage & Exposure ---")
+    if 'Dollar_Long' in bab_df.columns:
+        print(f"Avg Long Weight:        ${bab_df['Dollar_Long'].mean():.2f}")
+        print(f"Avg Short Weight:       ${bab_df['Dollar_Short'].mean():.2f}")
+        print(f"Gross Exposure:         ${bab_df['Dollar_Long'].mean() + bab_df['Dollar_Short'].mean():.2f} (normalized to $2)")
+        print(f"Net Dollar Exposure:    ${bab_df['Dollar_Net'].mean():.3f}")
+
+    print("\n--- Ex-Ante Beta ---")
+    if 'Beta_BAB_ExAnte' in bab_df.columns:
+        beta_mean = bab_df['Beta_BAB_ExAnte'].mean()
+        print(f"Ex-Ante Beta:           {beta_mean:.4f} (should be ~0 for beta-neutral)")
 
     print("\n--- Portfolio Size ---")
     print(f"Average Q1 Stocks: {bab_df['N_Q1'].mean():.1f}")
