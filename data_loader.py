@@ -2,11 +2,18 @@
 data_loader.py - Download and prepare data for Betting-Against-Beta strategy
 
 This script:
-1. Downloads MSCI World constituents (~1,400 stocks) from iShares URTH ETF
-2. Fetches monthly adjusted close prices for all stocks and MSCI World proxy
+1. Downloads monthly adjusted close prices for MSCI World constituents
+2. Downloads S&P 500 (^GSPC) as market benchmark
 3. Downloads and processes risk-free rate (^IRX)
-4. Computes monthly returns, excess returns, and rolling 60-month betas
-5. Saves all outputs as CSVs
+4. Computes monthly returns and excess returns
+5. Computes rolling 60-month betas vs the benchmark
+6. Saves all outputs as CSVs
+
+Key Design:
+- Uses curated list of major stocks from developed markets
+- S&P 500 (^GSPC) as benchmark (full history from 1950s)
+- 60-month rolling window for beta estimation
+- Date range: 1995-2014 (first valid betas from 2000)
 
 Author: BAB Strategy Implementation
 """
@@ -14,7 +21,6 @@ Author: BAB Strategy Implementation
 import pandas as pd
 import numpy as np
 import yfinance as yf
-from datetime import datetime
 import os
 import warnings
 import logging
@@ -25,139 +31,12 @@ warnings.filterwarnings('ignore')
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Configuration - import from config.py for consistency
-try:
-    from config import START_DATE, END_DATE, ROLLING_WINDOW, DATA_DIR, MSCI_WORLD_PROXY
-except ImportError:
-    # Fallback if config.py not available
-    DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data')
-    START_DATE = '1995-01-01'  # F&P replication start
-    END_DATE = '2014-01-01'    # F&P publication year - NO look-ahead!
-    ROLLING_WINDOW = 60  # months for beta calculation
-    MSCI_WORLD_PROXY = 'URTH'  # iShares MSCI World ETF
-
-
-def get_msci_world_constituents(use_expanded: bool = True, validate: bool = False):
-    """
-    Get MSCI World constituent tickers.
-
-    Strategy:
-    1. If use_expanded=True: Use msci_ticker_downloader to get ~500+ tickers
-       from iShares URTH holdings + comprehensive curated list
-    2. If use_expanded=False: Use minimal curated list (~159 tickers)
-
-    Args:
-        use_expanded: If True, use the expanded ticker downloader (recommended)
-        validate: If True, validate each ticker with yfinance (slower but ensures data availability)
-
-    Returns:
-        list: List of valid stock tickers
-    """
-    logger.info("Fetching MSCI World constituent tickers...")
-
-    if use_expanded:
-        try:
-            from msci_ticker_downloader import get_msci_world_tickers
-            tickers = get_msci_world_tickers(validate=validate, use_cache=True)
-            logger.info(f"Loaded {len(tickers)} tickers from expanded MSCI World downloader")
-            return tickers
-        except ImportError as e:
-            logger.warning(f"Could not import msci_ticker_downloader: {e}")
-            logger.warning("Falling back to curated list...")
-        except Exception as e:
-            logger.warning(f"Error using expanded downloader: {e}")
-            logger.warning("Falling back to curated list...")
-
-    # Fallback: Major MSCI World constituents - curated list covering major developed markets
-    msci_world_tickers = [
-        # United States - Large Cap
-        'AAPL', 'MSFT', 'GOOGL', 'GOOG', 'AMZN', 'NVDA', 'META', 'TSLA', 'BRK-B',
-        'UNH', 'JNJ', 'JPM', 'V', 'PG', 'XOM', 'HD', 'CVX', 'MA', 'ABBV',
-        'MRK', 'LLY', 'PEP', 'KO', 'COST', 'AVGO', 'BAC', 'MCD', 'CSCO', 'WMT',
-        'TMO', 'PFE', 'ABT', 'CRM', 'ACN', 'ADBE', 'DHR', 'NKE', 'TXN', 'NFLX',
-        'ORCL', 'AMD', 'UNP', 'PM', 'RTX', 'NEE', 'LOW', 'QCOM', 'INTC', 'LIN',
-        'BMY', 'CMCSA', 'AMGN', 'T', 'VZ', 'UPS', 'HON', 'COP', 'SBUX', 'IBM',
-        'GS', 'CAT', 'BA', 'MMM', 'DE', 'BLK', 'AXP', 'GILD', 'MS', 'CVS',
-        'MDLZ', 'GE', 'SCHW', 'C', 'INTU', 'ADI', 'PLD', 'AMT', 'NOW', 'ISRG',
-        'ZTS', 'SYK', 'BKNG', 'VRTX', 'ADP', 'MMC', 'SPGI', 'MO', 'CB', 'BDX',
-        'REGN', 'ETN', 'TJX', 'LRCX', 'DUK', 'SO', 'CME', 'PGR', 'WM', 'CI',
-
-        # Japan (ADRs and liquid tickers)
-        'TM', 'SONY', 'MUFG', 'SMFG', 'HMC', 'NTT', 'SNE', 'MFG', 'NTDOY', 'NPPXF',
-
-        # United Kingdom
-        'BP', 'SHEL', 'HSBC', 'GSK', 'AZN', 'UL', 'RIO', 'BHP', 'BTI', 'LYG',
-        'NWG', 'VOD', 'DEO',
-
-        # Germany
-        'SAP', 'DB', 'DTEGY', 'BASFY', 'BAYRY', 'SIEGY', 'VWAGY',
-
-        # France
-        'TTE', 'SNY', 'LVMUY', 'LRLCY', 'BNPQY',
-
-        # Switzerland
-        'NSRGY', 'NVS', 'RHHBY', 'UBS', 'CSGN',
-
-        # Netherlands
-        'ASML', 'ING', 'NVO',
-
-        # Australia
-        'BHP', 'RIO', 'WBK',
-
-        # Canada
-        'TD', 'RY', 'BNS', 'CNQ', 'ENB', 'CP', 'CNI', 'TRP', 'BMO', 'CM',
-        'SU', 'MFC', 'BCE',
-
-        # Other Developed Markets
-        'TSM',  # Taiwan (often included)
-        'TCEHY', 'BABA',  # China ADRs (sometimes in EM/DM boundary)
-    ]
-
-    # Remove duplicates while preserving order
-    msci_world_tickers = list(dict.fromkeys(msci_world_tickers))
-
-    logger.info(f"Using curated list with {len(msci_world_tickers)} symbols")
-
-    return msci_world_tickers
-
-
-def validate_and_clean_tickers(tickers, sample_size=None):
-    """
-    Validate tickers by checking if they exist in yfinance.
-
-    Args:
-        tickers: List of ticker symbols
-        sample_size: Optional limit for testing
-
-    Returns:
-        list: List of valid tickers
-    """
-    logger.info("Validating tickers...")
-
-    if sample_size:
-        tickers = tickers[:sample_size]
-
-    valid_tickers = []
-    invalid_tickers = []
-
-    for ticker in tickers:
-        try:
-            # Basic validation - check if ticker has any data
-            test_data = yf.Ticker(ticker)
-            hist = test_data.history(period='5d')
-            if len(hist) > 0:
-                valid_tickers.append(ticker)
-            else:
-                invalid_tickers.append(ticker)
-        except Exception as e:
-            invalid_tickers.append(ticker)
-            logger.debug(f"Invalid ticker {ticker}: {e}")
-
-    logger.info(f"Valid tickers: {len(valid_tickers)}, Invalid: {len(invalid_tickers)}")
-    if invalid_tickers:
-        logger.debug(f"Invalid tickers: {invalid_tickers[:10]}...")
-
-    return valid_tickers
+# Import configuration
+from config import (
+    START_DATE, END_DATE, ROLLING_WINDOW, MIN_PERIODS_BETA,
+    DATA_DIR, BENCHMARK_TICKER, MSCI_WORLD_TICKERS,
+    DOWNLOAD_BATCH_SIZE, ensure_directories
+)
 
 
 def download_monthly_prices(tickers, start_date, end_date):
@@ -166,21 +45,24 @@ def download_monthly_prices(tickers, start_date, end_date):
 
     Args:
         tickers: List of ticker symbols
-        start_date: Start date string
-        end_date: End date string
+        start_date: Start date string (YYYY-MM-DD)
+        end_date: End date string (YYYY-MM-DD)
 
     Returns:
         pd.DataFrame: Wide DataFrame with Date index and tickers as columns
     """
     logger.info(f"Downloading monthly prices for {len(tickers)} tickers...")
+    logger.info(f"Date range: {start_date} to {end_date}")
 
-    # Download data in batches to avoid rate limits
     all_data = pd.DataFrame()
-    batch_size = 50
+    batch_size = DOWNLOAD_BATCH_SIZE
+    failed_tickers = []
 
     for i in range(0, len(tickers), batch_size):
         batch = tickers[i:i+batch_size]
-        logger.info(f"Downloading batch {i//batch_size + 1}/{(len(tickers)-1)//batch_size + 1}")
+        batch_num = i // batch_size + 1
+        total_batches = (len(tickers) - 1) // batch_size + 1
+        logger.info(f"Downloading batch {batch_num}/{total_batches} ({len(batch)} tickers)")
 
         try:
             data = yf.download(
@@ -193,17 +75,26 @@ def download_monthly_prices(tickers, start_date, end_date):
                 threads=True
             )
 
+            if data.empty:
+                logger.warning(f"No data returned for batch {batch_num}")
+                failed_tickers.extend(batch)
+                continue
+
+            # Handle single vs multiple tickers
             if len(batch) == 1:
-                # Single ticker returns Series, need to convert
                 if 'Close' in data.columns:
                     batch_df = data[['Close']].copy()
                     batch_df.columns = [batch[0]]
                 else:
                     batch_df = pd.DataFrame()
             else:
-                # Multiple tickers return MultiIndex columns
-                if 'Close' in data.columns.get_level_values(0):
-                    batch_df = data['Close'].copy()
+                if isinstance(data.columns, pd.MultiIndex):
+                    if 'Close' in data.columns.get_level_values(0):
+                        batch_df = data['Close'].copy()
+                    else:
+                        batch_df = pd.DataFrame()
+                elif 'Close' in data.columns:
+                    batch_df = data[['Close']].copy()
                 else:
                     batch_df = pd.DataFrame()
 
@@ -214,40 +105,53 @@ def download_monthly_prices(tickers, start_date, end_date):
                     all_data = all_data.join(batch_df, how='outer')
 
         except Exception as e:
-            logger.warning(f"Error downloading batch: {e}")
+            logger.warning(f"Error downloading batch {batch_num}: {e}")
+            failed_tickers.extend(batch)
             continue
+
+    if all_data.empty:
+        raise RuntimeError("No price data could be downloaded!")
 
     # Ensure datetime index
     all_data.index = pd.to_datetime(all_data.index)
 
-    # Resample to month-end to ensure consistent dates
+    # Resample to month-end for consistent dates
     all_data = all_data.resample('ME').last()
 
+    # Drop columns with too many missing values (> 50%)
+    missing_pct = all_data.isna().sum() / len(all_data)
+    valid_cols = missing_pct[missing_pct < 0.5].index
+    dropped = len(all_data.columns) - len(valid_cols)
+    if dropped > 0:
+        logger.info(f"Dropped {dropped} tickers with >50% missing data")
+    all_data = all_data[valid_cols]
+
     logger.info(f"Downloaded prices shape: {all_data.shape}")
+    logger.info(f"Date range: {all_data.index.min()} to {all_data.index.max()}")
+
+    if failed_tickers:
+        logger.warning(f"Failed to download {len(failed_tickers)} tickers: {failed_tickers[:10]}...")
 
     return all_data
 
 
-def download_benchmark(start_date, end_date, proxy=MSCI_WORLD_PROXY):
+def download_benchmark(start_date, end_date, ticker=BENCHMARK_TICKER):
     """
-    Download MSCI World proxy (URTH ETF) monthly prices.
-
-    Note: URTH started trading in 2012. For earlier dates, we'll use a blend
-    of major market indices or accept the limitation.
+    Download market benchmark monthly prices.
 
     Args:
         start_date: Start date string
         end_date: End date string
-        proxy: Ticker symbol for MSCI World proxy
+        ticker: Ticker symbol for benchmark (default: ^GSPC)
 
     Returns:
         pd.Series: Monthly adjusted close prices
     """
-    logger.info(f"Downloading MSCI World proxy ({proxy})...")
+    logger.info(f"Downloading benchmark ({ticker})...")
 
     try:
         data = yf.download(
-            proxy,
+            ticker,
             start=start_date,
             end=end_date,
             interval='1mo',
@@ -256,27 +160,27 @@ def download_benchmark(start_date, end_date, proxy=MSCI_WORLD_PROXY):
         )
 
         if data.empty:
-            raise ValueError(f"No data returned for {proxy}")
+            raise ValueError(f"No data returned for {ticker}")
 
-        # Handle single vs multi-column return (yfinance may return MultiIndex)
+        # Extract Close prices
         if isinstance(data.columns, pd.MultiIndex):
-            # MultiIndex columns: ('Close', 'URTH'), etc.
             benchmark = data['Close'].iloc[:, 0].copy()
         elif 'Close' in data.columns:
             benchmark = data['Close'].copy()
         else:
             benchmark = data.iloc[:, 0].copy()
 
-        # Ensure it's a Series
+        # Ensure Series
         if isinstance(benchmark, pd.DataFrame):
             benchmark = benchmark.iloc[:, 0]
 
         # Resample to month-end
         benchmark.index = pd.to_datetime(benchmark.index)
         benchmark = benchmark.resample('ME').last()
-        benchmark.name = 'MSCI_World'
+        benchmark.name = 'Benchmark'
 
-        logger.info(f"Benchmark data from {benchmark.index.min()} to {benchmark.index.max()}")
+        logger.info(f"Benchmark data: {len(benchmark)} months")
+        logger.info(f"Date range: {benchmark.index.min()} to {benchmark.index.max()}")
 
         return benchmark
 
@@ -304,27 +208,24 @@ def download_risk_free_rate(start_date, end_date):
     logger.info("Downloading risk-free rate (^IRX)...")
 
     try:
-        # Use Ticker API instead of download() for more reliable single-ticker fetching
         ticker = yf.Ticker('^IRX')
         data = ticker.history(start=start_date, end=end_date, interval='1d')
 
         if data.empty:
-            raise RuntimeError("No ^IRX data returned; cannot compute risk-free rate.")
+            raise RuntimeError("No ^IRX data returned")
 
-        # Get close prices - handle MultiIndex columns from newer yfinance
+        # Extract close prices
         if isinstance(data.columns, pd.MultiIndex):
-            # MultiIndex columns: ('Close', '^IRX'), etc.
             rf_daily = data['Close'].iloc[:, 0].copy()
         elif 'Close' in data.columns:
             rf_daily = data['Close'].copy()
         else:
             rf_daily = data.iloc[:, 0].copy()
 
-        # Ensure it's a Series (not DataFrame)
         if isinstance(rf_daily, pd.DataFrame):
             rf_daily = rf_daily.iloc[:, 0]
 
-        # Convert to numeric, coercing errors
+        # Convert to numeric
         rf_daily = pd.to_numeric(rf_daily, errors='coerce')
 
         # Resample to month-end
@@ -337,47 +238,41 @@ def download_risk_free_rate(start_date, end_date):
         rf_monthly_decimal = (1 + rf_monthly / 100) ** (1/12) - 1
         rf_monthly_decimal.name = 'RF_Rate'
 
-        logger.info(f"Risk-free rate data from {rf_monthly_decimal.index.min()} to {rf_monthly_decimal.index.max()}")
+        # Remove timezone info if present
+        if hasattr(rf_monthly_decimal.index, 'tz') and rf_monthly_decimal.index.tz is not None:
+            rf_monthly_decimal.index = rf_monthly_decimal.index.tz_localize(None)
+
+        logger.info(f"Risk-free rate: {len(rf_monthly_decimal)} months")
+        logger.info(f"Average monthly RF: {rf_monthly_decimal.mean()*100:.4f}%")
 
         return rf_monthly_decimal
 
     except Exception as e:
-        logger.warning(f"Error downloading risk-free rate via Ticker API: {e}")
+        logger.warning(f"Error downloading risk-free rate: {e}")
+        logger.warning("Using synthetic 2% annual rate as fallback")
 
-        # Fallback: generate synthetic risk-free rate based on historical average
-        # Average 3-month T-bill rate ~2% annually = ~0.00165 monthly
-        logger.warning("Using synthetic risk-free rate (2% annual average) as fallback")
-
-        # Create date range matching the requested period
+        # Create synthetic risk-free rate
         date_range = pd.date_range(start=start_date, end=end_date, freq='ME')
-        # Use ~2% annual rate as reasonable historical average
-        annual_rate = 2.0  # percent
+        annual_rate = 2.0  # 2% annual
         monthly_rate = (1 + annual_rate / 100) ** (1/12) - 1
-
         rf_monthly_decimal = pd.Series(monthly_rate, index=date_range, name='RF_Rate')
-
-        logger.info(f"Synthetic risk-free rate: {monthly_rate:.6f} monthly ({annual_rate}% annual)")
-        logger.info(f"Date range: {rf_monthly_decimal.index.min()} to {rf_monthly_decimal.index.max()}")
 
         return rf_monthly_decimal
 
 
 def compute_returns(prices):
     """
-    Compute simple monthly returns using percentage change.
+    Compute simple monthly returns.
 
     Args:
         prices: DataFrame of monthly prices
 
     Returns:
-        pd.DataFrame: Monthly returns
+        pd.DataFrame: Monthly returns (first row is NaN, dropped)
     """
     logger.info("Computing monthly returns...")
     returns = prices.pct_change()
-
-    # Drop the first row (NaN from pct_change)
-    returns = returns.iloc[1:]
-
+    returns = returns.iloc[1:]  # Drop first NaN row
     return returns
 
 
@@ -394,18 +289,11 @@ def compute_excess_returns(returns, rf_rate):
     """
     logger.info("Computing excess returns...")
 
-    if rf_rate is None:
-        raise RuntimeError("Risk-free rate is missing; cannot compute excess returns.")
-
-    # Allow rf_rate to be passed as DataFrame or Series
+    # Handle DataFrame vs Series for rf_rate
     if isinstance(rf_rate, pd.DataFrame):
-        if rf_rate.shape[1] > 1:
-            rf_rate = rf_rate.iloc[:, 0]
-        else:
-            rf_rate = rf_rate.squeeze()
-    rf_rate = rf_rate.rename('RF_Rate')
+        rf_rate = rf_rate.iloc[:, 0]
 
-    # Remove timezone info to avoid tz-naive/tz-aware mismatch
+    # Remove timezone info from both
     if hasattr(returns.index, 'tz') and returns.index.tz is not None:
         returns = returns.copy()
         returns.index = returns.index.tz_localize(None)
@@ -415,6 +303,7 @@ def compute_excess_returns(returns, rf_rate):
 
     # Align dates
     common_dates = returns.index.intersection(rf_rate.index)
+    logger.info(f"Common dates for excess returns: {len(common_dates)}")
 
     # Subtract risk-free rate from each column
     excess_returns = returns.loc[common_dates].subtract(rf_rate.loc[common_dates], axis=0)
@@ -422,17 +311,15 @@ def compute_excess_returns(returns, rf_rate):
     return excess_returns
 
 
-def compute_rolling_betas(excess_returns_stocks, excess_returns_benchmark, window=ROLLING_WINDOW):
+def compute_rolling_betas(stock_excess_returns, benchmark_excess_returns, window=ROLLING_WINDOW):
     """
-    Compute rolling betas for each stock versus the benchmark using excess returns only.
+    Compute rolling betas for each stock versus the benchmark.
 
     Beta = Cov(stock_excess, benchmark_excess) / Var(benchmark_excess)
 
-    We require a full 60-month window of non-missing excess returns (no look-ahead).
-
     Args:
-        excess_returns_stocks: DataFrame of stock excess returns
-        excess_returns_benchmark: Series of benchmark excess returns
+        stock_excess_returns: DataFrame of stock excess returns
+        benchmark_excess_returns: Series of benchmark excess returns
         window: Rolling window size in months
 
     Returns:
@@ -441,43 +328,46 @@ def compute_rolling_betas(excess_returns_stocks, excess_returns_benchmark, windo
     logger.info(f"Computing rolling {window}-month betas...")
 
     # Align dates
-    common_dates = excess_returns_stocks.index.intersection(excess_returns_benchmark.index)
-    stock_rets = excess_returns_stocks.loc[common_dates]
-    bench_rets = excess_returns_benchmark.loc[common_dates]
+    common_dates = stock_excess_returns.index.intersection(benchmark_excess_returns.index)
+    stock_rets = stock_excess_returns.loc[common_dates]
+    bench_rets = benchmark_excess_returns.loc[common_dates]
 
+    logger.info(f"Computing betas for {len(stock_rets.columns)} stocks over {len(common_dates)} months")
+
+    # Initialize output
     betas = pd.DataFrame(index=stock_rets.index, columns=stock_rets.columns, dtype=float)
-    min_periods = window  # strict 60-month window
 
-    # Pre-compute benchmark variance (needs full window)
-    bench_var = bench_rets.rolling(window=window, min_periods=min_periods).var()
+    # Pre-compute benchmark variance
+    bench_var = bench_rets.rolling(window=window, min_periods=MIN_PERIODS_BETA).var()
 
+    # Compute beta for each stock
     for col in stock_rets.columns:
         stock_series = stock_rets[col]
-        cov_series = stock_series.rolling(window=window, min_periods=min_periods).cov(bench_rets)
+        cov_series = stock_series.rolling(window=window, min_periods=MIN_PERIODS_BETA).cov(bench_rets)
         betas[col] = cov_series / bench_var
 
+    # Replace inf with NaN
     betas = betas.replace([np.inf, -np.inf], np.nan)
 
+    # Summary statistics
     valid_betas = betas.notna().sum().sum()
     total_cells = betas.shape[0] * betas.shape[1]
-    missing_per_month = betas.isna().sum(axis=1)
-    logger.info(f"Computed betas shape: {betas.shape}")
-    logger.info(f"Valid beta values: {valid_betas} of {total_cells} ({100*valid_betas/total_cells:.1f}%)")
-    logger.info(f"Average missing betas per month: {missing_per_month.mean():.1f} "
-                f"(min {missing_per_month.min()}, max {missing_per_month.max()})")
+    pct_valid = 100 * valid_betas / total_cells if total_cells > 0 else 0
+
+    logger.info(f"Betas shape: {betas.shape}")
+    logger.info(f"Valid beta values: {valid_betas:,} of {total_cells:,} ({pct_valid:.1f}%)")
+
+    # Per-month statistics
+    valid_per_month = betas.notna().sum(axis=1)
+    logger.info(f"Stocks with valid beta per month: min={valid_per_month.min()}, "
+                f"max={valid_per_month.max()}, mean={valid_per_month.mean():.1f}")
 
     return betas
 
 
 def save_data(data, filename):
-    """
-    Save DataFrame to CSV.
-
-    Args:
-        data: DataFrame or Series to save
-        filename: Output filename (without path)
-    """
-    os.makedirs(DATA_DIR, exist_ok=True)
+    """Save DataFrame to CSV in data directory."""
+    ensure_directories()
     filepath = os.path.join(DATA_DIR, filename)
 
     if isinstance(data, pd.Series):
@@ -488,66 +378,49 @@ def save_data(data, filename):
 
 
 def main():
-    """
-    Main data loading pipeline.
-    """
+    """Main data loading pipeline."""
     logger.info("=" * 60)
     logger.info("Starting BAB Data Loader")
     logger.info(f"Date range: {START_DATE} to {END_DATE}")
     logger.info("=" * 60)
 
-    # Ensure data directory exists
-    os.makedirs(DATA_DIR, exist_ok=True)
+    ensure_directories()
 
-    # Step 1: Get MSCI World constituents
-    tickers = get_msci_world_constituents()
-    pd.DataFrame({"Ticker": tickers}).to_csv(os.path.join(DATA_DIR, "ticker_list.csv"), index=False)
-    logger.info("Saved proxy MSCI World ticker universe to data/ticker_list.csv (URTH-based subset; coverage + survivorship caveats)")
+    # Step 1: Get tickers
+    tickers = list(dict.fromkeys(MSCI_WORLD_TICKERS))  # Remove duplicates
+    logger.info(f"Using {len(tickers)} tickers from curated MSCI World list")
 
-    # Step 2: Validate tickers (optional - comment out for faster runs)
-    # tickers = validate_and_clean_tickers(tickers)
+    # Save ticker list
+    pd.DataFrame({"Ticker": tickers}).to_csv(
+        os.path.join(DATA_DIR, "ticker_list.csv"), index=False
+    )
 
-    # Step 3: Download monthly prices for stocks
+    # Step 2: Download stock prices
     stock_prices = download_monthly_prices(tickers, START_DATE, END_DATE)
 
-    # Step 4: Download benchmark (MSCI World proxy)
+    # Step 3: Download benchmark
     benchmark_prices = download_benchmark(START_DATE, END_DATE)
 
-    # Step 5: Download risk-free rate
+    # Step 4: Download risk-free rate
     rf_rate = download_risk_free_rate(START_DATE, END_DATE)
-    if rf_rate is None:
-        existing_rf_path = os.path.join(DATA_DIR, 'risk_free_rate.csv')
-        if os.path.exists(existing_rf_path):
-            logger.warning("Using existing risk_free_rate.csv because download failed.")
-            rf_df = pd.read_csv(existing_rf_path, index_col=0, parse_dates=True)
-            first_col = rf_df.columns[0]
-            rf_df = rf_df.rename(columns={first_col: 'RF_Rate'})
-            rf_rate = rf_df.iloc[:, 0]
-            rf_rate.name = 'RF_Rate'
-            if rf_rate.isna().any() or rf_rate.std() == 0:
-                raise RuntimeError("Existing risk_free_rate.csv is invalid (NaN or constant); aborting.")
-        else:
-            raise RuntimeError("Risk-free rate download failed and no cached risk_free_rate.csv found; aborting.")
 
-    # Step 6: Compute returns
+    # Step 5: Compute returns
     stock_returns = compute_returns(stock_prices)
-    # Handle case where benchmark_prices might be Series or DataFrame
-    if isinstance(benchmark_prices, pd.Series):
-        benchmark_df = benchmark_prices.to_frame()
-    else:
-        benchmark_df = benchmark_prices
+
+    benchmark_df = benchmark_prices.to_frame() if isinstance(benchmark_prices, pd.Series) else benchmark_prices
     benchmark_returns = compute_returns(benchmark_df).iloc[:, 0]
     benchmark_returns.name = 'MSCI_World'
 
-    # Step 7: Compute excess returns (R_i,t - R_f,t)
+    # Step 6: Compute excess returns
     stock_excess_returns = compute_excess_returns(stock_returns, rf_rate)
     benchmark_excess_returns = compute_excess_returns(benchmark_returns.to_frame(), rf_rate).iloc[:, 0]
+    benchmark_excess_returns.name = 'MSCI_World'
 
-    # Step 8: Compute rolling betas (excess-return OLS proxy, 60M window, >=60 obs)
-    logger.info("Betas estimated on EXCESS returns (60-month window, require full window).")
+    # Step 7: Compute rolling betas
+    logger.info(f"Beta estimation: {ROLLING_WINDOW}-month rolling window, min {MIN_PERIODS_BETA} periods")
     rolling_betas = compute_rolling_betas(stock_excess_returns, benchmark_excess_returns)
 
-    # Step 9: Save all outputs
+    # Step 8: Save all outputs
     logger.info("Saving all data files...")
 
     # Combine stock and benchmark prices
@@ -560,14 +433,13 @@ def main():
     all_returns['MSCI_World'] = benchmark_returns
     save_data(all_returns, 'monthly_returns.csv')
 
-    # Save excess returns
+    # Combine stock and benchmark excess returns
     all_excess_returns = stock_excess_returns.copy()
     all_excess_returns['MSCI_World'] = benchmark_excess_returns
     save_data(all_excess_returns, 'monthly_excess_returns.csv')
 
     # Save risk-free rate
-    if rf_rate is not None:
-        save_data(rf_rate.to_frame(), 'risk_free_rate.csv')
+    save_data(rf_rate.to_frame(), 'risk_free_rate.csv')
 
     # Save rolling betas
     save_data(rolling_betas, 'rolling_betas.csv')
@@ -577,12 +449,19 @@ def main():
     logger.info(f"Output files saved to: {DATA_DIR}")
     logger.info("=" * 60)
 
-    # Print summary statistics
+    # Print summary
     print("\n=== Data Summary ===")
-    print(f"Date range: {all_prices.index.min()} to {all_prices.index.max()}")
+    print(f"Date range: {all_prices.index.min().strftime('%Y-%m-%d')} to {all_prices.index.max().strftime('%Y-%m-%d')}")
     print(f"Number of stocks: {len(stock_prices.columns)}")
     print(f"Total months: {len(all_prices)}")
-    print(f"Stocks with valid betas (final month): {rolling_betas.iloc[-1].notna().sum()}")
+
+    # Check valid betas in recent months
+    recent_betas = rolling_betas.tail(12)
+    avg_valid = recent_betas.notna().sum(axis=1).mean()
+    print(f"Avg stocks with valid betas (last 12 months): {avg_valid:.0f}")
+
+    if avg_valid < 10:
+        logger.warning("Very few stocks have valid betas! Check date range and data.")
 
 
 if __name__ == '__main__':

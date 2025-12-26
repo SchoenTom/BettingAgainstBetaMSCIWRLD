@@ -3,13 +3,13 @@ backtest.py - Compute performance statistics for BAB strategy
 
 This script:
 1. Loads BAB portfolio returns and benchmark returns
-2. Computes performance statistics:
-   - Annualized return
-   - Annualized volatility
-   - Sharpe ratio
-   - Max drawdown
-   - Various other metrics
-3. Saves summary and detailed performance files
+2. Computes comprehensive performance statistics:
+   - Annualized return, volatility, Sharpe ratio
+   - Maximum drawdown, Sortino ratio, Calmar ratio
+   - CAPM alpha and beta with t-statistics
+   - Information ratio
+3. Creates monthly performance DataFrame
+4. Saves summary and detailed performance files
 
 Author: BAB Strategy Implementation
 """
@@ -24,14 +24,13 @@ import math
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Configuration
-DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data')
-OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'output')
+# Import configuration
+from config import DATA_DIR, OUTPUT_DIR, PERIODS_PER_YEAR, ensure_directories
 
 
 def load_data():
     """
-    Load BAB portfolio and benchmark EXCESS returns.
+    Load BAB portfolio and benchmark excess returns.
 
     Returns:
         tuple: (bab_df, benchmark_excess)
@@ -40,81 +39,53 @@ def load_data():
 
     # Load BAB portfolio
     bab_path = os.path.join(OUTPUT_DIR, 'bab_portfolio.csv')
+    if not os.path.exists(bab_path):
+        raise FileNotFoundError(f"Missing {bab_path}. Run portfolio_construction.py first.")
+
     bab_df = pd.read_csv(bab_path, index_col=0, parse_dates=True)
     logger.info(f"Loaded BAB portfolio: {bab_df.shape}")
 
-    if 'BAB_Excess_Return' not in bab_df.columns:
-        raise RuntimeError("BAB_Excess_Return missing in bab_portfolio.csv; BAB must be based on excess returns.")
+    if bab_df.empty:
+        raise RuntimeError("BAB portfolio is empty! Check portfolio_construction.py output.")
 
-    # Load benchmark EXCESS returns
+    if 'BAB_Excess_Return' not in bab_df.columns:
+        raise RuntimeError("BAB_Excess_Return column missing in bab_portfolio.csv")
+
+    # Load benchmark excess returns
     excess_path = os.path.join(DATA_DIR, 'monthly_excess_returns.csv')
+    if not os.path.exists(excess_path):
+        raise FileNotFoundError(f"Missing {excess_path}. Run data_loader.py first.")
+
     excess_returns = pd.read_csv(excess_path, index_col=0, parse_dates=True)
 
     if 'MSCI_World' in excess_returns.columns:
         benchmark = excess_returns['MSCI_World']
     else:
+        logger.warning("MSCI_World not found, using first column as benchmark")
         benchmark = excess_returns.iloc[:, 0]
-        logger.warning("MSCI_World not found in monthly_excess_returns, using first column as benchmark")
 
-    logger.info(f"Loaded benchmark EXCESS returns: {len(benchmark)}")
+    logger.info(f"Loaded benchmark excess returns: {len(benchmark)} months")
 
     return bab_df, benchmark
 
 
 def compute_cumulative_returns(returns):
-    """
-    Compute cumulative returns from a return series.
-
-    Args:
-        returns: Series of periodic returns
-
-    Returns:
-        pd.Series: Cumulative returns (growth of $1)
-    """
+    """Compute cumulative returns (growth of $1)."""
     return (1 + returns).cumprod()
 
 
-def compute_annualized_return(returns, periods_per_year=12):
-    """
-    Compute annualized return from periodic returns.
-    For excess returns, this is equivalent to mean * periods_per_year.
-
-    Args:
-        returns: Series of periodic returns (typically excess)
-        periods_per_year: Number of periods per year
-
-    Returns:
-        float: Annualized return
-    """
+def compute_annualized_return(returns, periods_per_year=PERIODS_PER_YEAR):
+    """Compute annualized return from periodic returns."""
     return returns.mean() * periods_per_year
 
 
-def compute_annualized_volatility(returns, periods_per_year=12):
-    """
-    Compute annualized volatility from periodic returns.
-
-    Args:
-        returns: Series of periodic returns
-        periods_per_year: Number of periods per year
-
-    Returns:
-        float: Annualized volatility
-    """
+def compute_annualized_volatility(returns, periods_per_year=PERIODS_PER_YEAR):
+    """Compute annualized volatility from periodic returns."""
     return returns.std() * np.sqrt(periods_per_year)
 
 
-def compute_sharpe_ratio(returns, rf_rate=0, periods_per_year=12):
-    """
-    Compute Sharpe ratio.
-
-    Args:
-        returns: Series of periodic returns
-        rf_rate: Annual risk-free rate (default 0)
-        periods_per_year: Number of periods per year
-
-    Returns:
-        float: Sharpe ratio
-    """
+def compute_sharpe_ratio(returns, rf_rate=0, periods_per_year=PERIODS_PER_YEAR):
+    """Compute Sharpe ratio (assumes returns are already excess if rf_rate=0)."""
     ann_return = returns.mean() * periods_per_year
     ann_vol = returns.std() * np.sqrt(periods_per_year)
     if ann_vol == 0:
@@ -123,151 +94,44 @@ def compute_sharpe_ratio(returns, rf_rate=0, periods_per_year=12):
 
 
 def compute_max_drawdown(returns):
-    """
-    Compute maximum drawdown from a return series.
-
-    Args:
-        returns: Series of periodic returns
-
-    Returns:
-        float: Maximum drawdown (as positive number)
-    """
+    """Compute maximum drawdown from a return series."""
     cum_returns = compute_cumulative_returns(returns)
     rolling_max = cum_returns.expanding().max()
     drawdowns = cum_returns / rolling_max - 1
     return abs(drawdowns.min())
 
 
-def compute_sortino_ratio(returns, rf_rate=0, periods_per_year=12):
-    """
-    Compute Sortino ratio (uses downside deviation).
-
-    Args:
-        returns: Series of periodic returns
-        rf_rate: Annual risk-free rate
-        periods_per_year: Number of periods per year
-
-    Returns:
-        float: Sortino ratio
-    """
+def compute_sortino_ratio(returns, rf_rate=0, periods_per_year=PERIODS_PER_YEAR):
+    """Compute Sortino ratio (uses downside deviation)."""
     ann_return = compute_annualized_return(returns, periods_per_year)
-
-    # Downside returns only
     downside_returns = returns[returns < 0]
+    if len(downside_returns) == 0:
+        return np.inf
     downside_std = downside_returns.std() * np.sqrt(periods_per_year)
-
     if downside_std == 0:
         return 0
-
     return (ann_return - rf_rate) / downside_std
 
 
-def compute_calmar_ratio(returns, periods_per_year=12):
-    """
-    Compute Calmar ratio (return / max drawdown).
-
-    Args:
-        returns: Series of periodic returns
-        periods_per_year: Number of periods per year
-
-    Returns:
-        float: Calmar ratio
-    """
+def compute_calmar_ratio(returns, periods_per_year=PERIODS_PER_YEAR):
+    """Compute Calmar ratio (return / max drawdown)."""
     ann_return = compute_annualized_return(returns, periods_per_year)
     max_dd = compute_max_drawdown(returns)
-
     if max_dd == 0:
         return 0
-
     return ann_return / max_dd
 
 
 def compute_win_rate(returns):
-    """
-    Compute percentage of positive return periods.
-
-    Args:
-        returns: Series of periodic returns
-
-    Returns:
-        float: Win rate (0 to 1)
-    """
+    """Compute percentage of positive return periods."""
     return (returns > 0).mean()
-
-
-def compute_skewness(returns):
-    """
-    Compute skewness of returns.
-
-    Args:
-        returns: Series of periodic returns
-
-    Returns:
-        float: Skewness
-    """
-    return returns.dropna().skew()
-
-
-def compute_kurtosis(returns):
-    """
-    Compute excess kurtosis of returns.
-
-    Args:
-        returns: Series of periodic returns
-
-    Returns:
-        float: Excess kurtosis
-    """
-    return returns.dropna().kurtosis()
-
-
-def compute_rolling_sharpe(returns, window=12, periods_per_year=12):
-    """
-    Compute rolling Sharpe ratio.
-
-    Args:
-        returns: Series of periodic returns
-        window: Rolling window size
-        periods_per_year: Number of periods per year
-
-    Returns:
-        pd.Series: Rolling Sharpe ratios
-    """
-    rolling_mean = returns.rolling(window=window).mean() * periods_per_year
-    rolling_std = returns.rolling(window=window).std() * np.sqrt(periods_per_year)
-
-    return rolling_mean / rolling_std
-
-
-def compute_information_ratio(returns, benchmark_returns, periods_per_year=12):
-    """
-    Compute Information Ratio (excess return / tracking error).
-
-    Args:
-        returns: Series of strategy returns
-        benchmark_returns: Series of benchmark returns
-        periods_per_year: Number of periods per year
-
-    Returns:
-        float: Information ratio
-    """
-    # Align dates
-    common_dates = returns.index.intersection(benchmark_returns.index)
-    excess = returns.loc[common_dates] - benchmark_returns.loc[common_dates]
-
-    ann_excess = compute_annualized_return(excess, periods_per_year)
-    tracking_error = excess.std() * np.sqrt(periods_per_year)
-
-    if tracking_error == 0:
-        return 0
-
-    return ann_excess / tracking_error
 
 
 def run_capm(excess_strategy, excess_benchmark):
     """
-    CAPM regression on EXCESS returns: r_s = alpha + beta * r_m + e
-    Returns monthly alpha/beta with t-stats/p-values and R2.
+    Run CAPM regression: r_s = alpha + beta * r_m + e
+
+    Returns monthly alpha, beta with t-stats, p-values, and R2.
     """
     common = excess_strategy.index.intersection(excess_benchmark.index)
     y = excess_strategy.loc[common].dropna()
@@ -277,24 +141,44 @@ def run_capm(excess_strategy, excess_benchmark):
     x = x.loc[common]
 
     n = len(y)
-    if n < 24:
-        raise RuntimeError("Not enough observations for CAPM regression.")
+    if n < 12:
+        logger.warning(f"Only {n} observations for CAPM regression (need at least 12)")
+        return {
+            'alpha_monthly': np.nan, 'beta_mkt': np.nan,
+            'alpha_t': np.nan, 'beta_t': np.nan,
+            'alpha_p': np.nan, 'beta_p': np.nan,
+            'r2': np.nan, 'n': n
+        }
 
+    # OLS regression
     X = np.column_stack([np.ones(n), x.values])
-    beta_hat = np.linalg.inv(X.T @ X) @ (X.T @ y.values)
+    try:
+        beta_hat = np.linalg.inv(X.T @ X) @ (X.T @ y.values)
+    except np.linalg.LinAlgError:
+        return {
+            'alpha_monthly': np.nan, 'beta_mkt': np.nan,
+            'alpha_t': np.nan, 'beta_t': np.nan,
+            'alpha_p': np.nan, 'beta_p': np.nan,
+            'r2': np.nan, 'n': n
+        }
+
     residuals = y.values - X @ beta_hat
     sigma2 = (residuals @ residuals) / (n - 2)
     cov_beta = sigma2 * np.linalg.inv(X.T @ X)
     se_beta = np.sqrt(np.diag(cov_beta))
     t_stats = beta_hat / se_beta
 
-    normal_cdf = np.vectorize(lambda z: 0.5 * (1 + math.erf(z / math.sqrt(2))))
-    p_vals = 2 * (1 - normal_cdf(np.abs(t_stats)))
+    # P-values (two-tailed)
+    def normal_cdf(z):
+        return 0.5 * (1 + math.erf(z / math.sqrt(2)))
 
+    p_vals = [2 * (1 - normal_cdf(abs(t))) for t in t_stats]
+
+    # R-squared
     y_hat = X @ beta_hat
     ss_tot = ((y - y.mean()) ** 2).sum()
-    ss_res = ((y - y_hat) ** 2).sum()
-    r2 = 1 - ss_res / ss_tot
+    ss_res = ((y.values - y_hat) ** 2).sum()
+    r2 = 1 - ss_res / ss_tot if ss_tot > 0 else 0
 
     return {
         'alpha_monthly': beta_hat[0],
@@ -308,53 +192,22 @@ def run_capm(excess_strategy, excess_benchmark):
     }
 
 
-def compute_beta_to_benchmark(returns, benchmark_returns):
-    """
-    Compute beta of strategy to benchmark.
-
-    Args:
-        returns: Series of strategy returns
-        benchmark_returns: Series of benchmark returns
-
-    Returns:
-        float: Beta
-    """
+def compute_information_ratio(returns, benchmark_returns, periods_per_year=PERIODS_PER_YEAR):
+    """Compute Information Ratio (excess return / tracking error)."""
     common_dates = returns.index.intersection(benchmark_returns.index)
-    strat = returns.loc[common_dates].dropna()
-    bench = benchmark_returns.loc[common_dates].dropna()
-
-    common = strat.index.intersection(bench.index)
-    strat = strat.loc[common]
-    bench = bench.loc[common]
-
-    covar = np.cov(strat, bench)[0, 1]
-    var = np.var(bench)
-
-    if var == 0:
+    excess = returns.loc[common_dates] - benchmark_returns.loc[common_dates]
+    ann_excess = compute_annualized_return(excess, periods_per_year)
+    tracking_error = excess.std() * np.sqrt(periods_per_year)
+    if tracking_error == 0:
         return 0
+    return ann_excess / tracking_error
 
-    return covar / var
 
-
-def compute_alpha(returns, benchmark_returns, periods_per_year=12):
-    """
-    Compute alpha (Jensen's alpha).
-
-    Args:
-        returns: Series of strategy returns
-        benchmark_returns: Series of benchmark returns
-        periods_per_year: Number of periods per year
-
-    Returns:
-        float: Annualized alpha
-    """
-    common_dates = returns.index.intersection(benchmark_returns.index)
-    strat_ann = compute_annualized_return(returns.loc[common_dates], periods_per_year)
-    bench_ann = compute_annualized_return(benchmark_returns.loc[common_dates], periods_per_year)
-    beta = compute_beta_to_benchmark(returns, benchmark_returns)
-
-    # Alpha = strategy return - beta * benchmark return
-    return strat_ann - beta * bench_ann
+def compute_rolling_sharpe(returns, window=12, periods_per_year=PERIODS_PER_YEAR):
+    """Compute rolling Sharpe ratio."""
+    rolling_mean = returns.rolling(window=window).mean() * periods_per_year
+    rolling_std = returns.rolling(window=window).std() * np.sqrt(periods_per_year)
+    return rolling_mean / rolling_std
 
 
 def compute_all_statistics(bab_returns, benchmark_returns, strategy_name="BAB"):
@@ -362,8 +215,8 @@ def compute_all_statistics(bab_returns, benchmark_returns, strategy_name="BAB"):
     Compute all performance statistics.
 
     Args:
-        bab_returns: Series of BAB returns
-        benchmark_returns: Series of benchmark returns
+        bab_returns: Series of BAB excess returns
+        benchmark_returns: Series of benchmark excess returns
         strategy_name: Name for the strategy
 
     Returns:
@@ -376,14 +229,17 @@ def compute_all_statistics(bab_returns, benchmark_returns, strategy_name="BAB"):
     bab = bab_returns.loc[common_dates]
     bench = benchmark_returns.loc[common_dates]
 
-    # Simple t-stat for mean monthly excess return (significance marker)
+    logger.info(f"Aligned data: {len(bab)} months")
+
+    # T-statistic for mean return
     mean_ret = bab.mean()
     std_ret = bab.std()
     t_stat = mean_ret / (std_ret / np.sqrt(len(bab))) if std_ret > 0 else 0
 
+    # CAPM regression
     capm = run_capm(bab, bench)
 
-    stats_dict = {
+    stats = {
         # Basic info
         'Strategy': strategy_name,
         'Start_Date': bab.index.min().strftime('%Y-%m-%d'),
@@ -401,8 +257,8 @@ def compute_all_statistics(bab_returns, benchmark_returns, strategy_name="BAB"):
         # Risk metrics
         'Max_Drawdown': compute_max_drawdown(bab),
         'Calmar_Ratio': compute_calmar_ratio(bab),
-        'Skewness': compute_skewness(bab),
-        'Kurtosis': compute_kurtosis(bab),
+        'Skewness': bab.skew(),
+        'Kurtosis': bab.kurtosis(),
 
         # Win rate
         'Win_Rate': compute_win_rate(bab),
@@ -415,20 +271,20 @@ def compute_all_statistics(bab_returns, benchmark_returns, strategy_name="BAB"):
         'Beta_t': capm['beta_t'],
         'Beta_p': capm['beta_p'],
         'Alpha_Monthly': capm['alpha_monthly'],
-        'Alpha_Annualized': capm['alpha_monthly'] * 12,
+        'Alpha_Annualized': capm['alpha_monthly'] * 12 if not pd.isna(capm['alpha_monthly']) else np.nan,
         'Alpha_t': capm['alpha_t'],
         'Alpha_p': capm['alpha_p'],
         'Information_Ratio': compute_information_ratio(bab, bench),
         'CAPM_R2': capm['r2'],
 
-        # Benchmark stats for comparison
+        # Benchmark stats
         'Benchmark_Ann_Return': compute_annualized_return(bench),
         'Benchmark_Ann_Vol': compute_annualized_volatility(bench),
         'Benchmark_Sharpe': compute_sharpe_ratio(bench),
         'Benchmark_Max_DD': compute_max_drawdown(bench),
     }
 
-    return stats_dict
+    return stats
 
 
 def create_monthly_performance(bab_df, benchmark_returns):
@@ -444,8 +300,9 @@ def create_monthly_performance(bab_df, benchmark_returns):
     """
     logger.info("Creating monthly performance table...")
 
-    # Start with BAB data
     perf = bab_df.copy()
+
+    # Ensure BAB_Return exists
     if 'BAB_Excess_Return' in perf.columns:
         perf['BAB_Return'] = perf['BAB_Excess_Return']
 
@@ -454,11 +311,11 @@ def create_monthly_performance(bab_df, benchmark_returns):
     perf = perf.loc[common_dates]
     perf['Benchmark_Return'] = benchmark_returns.loc[common_dates]
 
-    # Compute cumulative returns
+    # Cumulative returns
     perf['BAB_Cumulative'] = compute_cumulative_returns(perf['BAB_Return'])
     perf['Benchmark_Cumulative'] = compute_cumulative_returns(perf['Benchmark_Return'])
 
-    # Compute excess return over benchmark
+    # Excess return over benchmark
     perf['Excess_Return'] = perf['BAB_Return'] - perf['Benchmark_Return']
     perf['Excess_Cumulative'] = compute_cumulative_returns(perf['Excess_Return'])
 
@@ -473,18 +330,14 @@ def create_monthly_performance(bab_df, benchmark_returns):
     bench_cum = perf['Benchmark_Cumulative']
     perf['Benchmark_Drawdown'] = bench_cum / bench_cum.expanding().max() - 1
 
+    logger.info(f"Monthly performance: {len(perf)} months")
+
     return perf
 
 
 def save_outputs(summary_stats, monthly_perf):
-    """
-    Save backtest outputs to CSV.
-
-    Args:
-        summary_stats: Dictionary of summary statistics
-        monthly_perf: DataFrame of monthly performance
-    """
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    """Save backtest outputs to CSV."""
+    ensure_directories()
 
     # Save summary
     summary_df = pd.DataFrame([summary_stats])
@@ -498,89 +351,91 @@ def save_outputs(summary_stats, monthly_perf):
     logger.info(f"Saved monthly performance to {monthly_path}")
 
 
-def print_summary(stats_dict):
-    """
-    Print formatted summary statistics.
-
-    Args:
-        stats_dict: Dictionary of performance statistics
-    """
+def print_summary(stats):
+    """Print formatted summary statistics."""
     print("\n" + "=" * 70)
     print("BAB Strategy Backtest Results")
     print("=" * 70)
 
-    print(f"\nPeriod: {stats_dict['Start_Date']} to {stats_dict['End_Date']}")
-    print(f"Total Months: {stats_dict['N_Months']}")
+    print(f"\nPeriod: {stats['Start_Date']} to {stats['End_Date']}")
+    print(f"Total Months: {stats['N_Months']}")
 
     def stars(t):
-        if abs(t) > 2.58:
-            return "***"
-        if abs(t) > 1.96:
-            return "**"
-        if abs(t) > 1.65:
-            return "*"
+        if pd.isna(t): return ""
+        if abs(t) > 2.58: return "***"
+        if abs(t) > 1.96: return "**"
+        if abs(t) > 1.65: return "*"
         return ""
 
     print("\n" + "-" * 70)
     print("                           BAB Strategy    MSCI World")
     print("-" * 70)
 
-    print(f"Annualized Return:         {stats_dict['Annualized_Return']*100:>10.2f}%{stars(stats_dict['Mean_Tstat']):>3}     {stats_dict['Benchmark_Ann_Return']*100:>10.2f}%")
-    print(f"Annualized Volatility:     {stats_dict['Annualized_Volatility']*100:>10.2f}%     {stats_dict['Benchmark_Ann_Vol']*100:>10.2f}%")
-    print(f"Sharpe Ratio:              {stats_dict['Sharpe_Ratio']:>10.3f}      {stats_dict['Benchmark_Sharpe']:>10.3f}")
-    print(f"Max Drawdown:              {stats_dict['Max_Drawdown']*100:>10.2f}%     {stats_dict['Benchmark_Max_DD']*100:>10.2f}%")
+    print(f"Annualized Return:         {stats['Annualized_Return']*100:>10.2f}%{stars(stats['Mean_Tstat']):>3}     {stats['Benchmark_Ann_Return']*100:>10.2f}%")
+    print(f"Annualized Volatility:     {stats['Annualized_Volatility']*100:>10.2f}%     {stats['Benchmark_Ann_Vol']*100:>10.2f}%")
+    print(f"Sharpe Ratio:              {stats['Sharpe_Ratio']:>10.3f}      {stats['Benchmark_Sharpe']:>10.3f}")
+    print(f"Max Drawdown:              {stats['Max_Drawdown']*100:>10.2f}%     {stats['Benchmark_Max_DD']*100:>10.2f}%")
 
     print("\n" + "-" * 70)
     print("BAB Strategy Details")
     print("-" * 70)
 
-    print(f"Total Return:              {stats_dict['Total_Return']*100:.2f}%")
-    print(f"Sortino Ratio:             {stats_dict['Sortino_Ratio']:.3f}")
-    print(f"Calmar Ratio:              {stats_dict['Calmar_Ratio']:.3f}")
-    print(f"Win Rate:                  {stats_dict['Win_Rate']*100:.1f}%")
-    print(f"Best Month:                {stats_dict['Best_Month']*100:.2f}%")
-    print(f"Worst Month:               {stats_dict['Worst_Month']*100:.2f}%")
-    print(f"Skewness:                  {stats_dict['Skewness']:.3f}")
-    print(f"Kurtosis:                  {stats_dict['Kurtosis']:.3f}")
+    print(f"Total Return:              {stats['Total_Return']*100:.2f}%")
+    print(f"Sortino Ratio:             {stats['Sortino_Ratio']:.3f}")
+    print(f"Calmar Ratio:              {stats['Calmar_Ratio']:.3f}")
+    print(f"Win Rate:                  {stats['Win_Rate']*100:.1f}%")
+    print(f"Best Month:                {stats['Best_Month']*100:.2f}%")
+    print(f"Worst Month:               {stats['Worst_Month']*100:.2f}%")
+    print(f"Skewness:                  {stats['Skewness']:.3f}")
+    print(f"Kurtosis:                  {stats['Kurtosis']:.3f}")
 
     print("\n" + "-" * 70)
-    print("Risk-Adjusted Metrics")
+    print("Risk-Adjusted Metrics (CAPM)")
     print("-" * 70)
 
-    print(f"Beta to Benchmark:         {stats_dict['Beta_to_Benchmark']:.3f} (t={stats_dict['Beta_t']:.2f}, p={stats_dict['Beta_p']:.4f})")
-    print(f"Alpha (Monthly):           {stats_dict['Alpha_Monthly']*100:.2f}% (t={stats_dict['Alpha_t']:.2f}, p={stats_dict['Alpha_p']:.4f})")
-    print(f"Alpha (Annualized):        {stats_dict['Alpha_Annualized']*100:.2f}%")
-    print(f"Information Ratio:         {stats_dict['Information_Ratio']:.3f}")
-    print(f"CAPM R^2:                  {stats_dict['CAPM_R2']:.3f}")
+    beta = stats['Beta_to_Benchmark']
+    alpha_ann = stats['Alpha_Annualized']
+
+    if not pd.isna(beta):
+        print(f"Beta to Benchmark:         {beta:.3f} (t={stats['Beta_t']:.2f}, p={stats['Beta_p']:.4f})")
+    else:
+        print(f"Beta to Benchmark:         N/A")
+
+    if not pd.isna(alpha_ann):
+        print(f"Alpha (Monthly):           {stats['Alpha_Monthly']*100:.2f}% (t={stats['Alpha_t']:.2f}, p={stats['Alpha_p']:.4f})")
+        print(f"Alpha (Annualized):        {alpha_ann*100:.2f}%")
+    else:
+        print(f"Alpha:                     N/A")
+
+    print(f"Information Ratio:         {stats['Information_Ratio']:.3f}")
+    if not pd.isna(stats['CAPM_R2']):
+        print(f"CAPM R^2:                  {stats['CAPM_R2']:.3f}")
 
     print("\n" + "=" * 70)
 
 
 def main():
-    """
-    Main backtest pipeline.
-    """
+    """Main backtest pipeline."""
     logger.info("=" * 60)
     logger.info("Starting Backtest Analysis")
     logger.info("=" * 60)
 
-    # Ensure output directory exists BEFORE any file operations
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    ensure_directories()
 
     # Load data
     bab_df, benchmark = load_data()
 
     # Compute all statistics
-    stats_dict = compute_all_statistics(bab_df['BAB_Excess_Return'], benchmark)
+    stats = compute_all_statistics(bab_df['BAB_Excess_Return'], benchmark)
 
     # Create monthly performance
     monthly_perf = create_monthly_performance(bab_df, benchmark)
 
     # Save outputs
-    save_outputs(stats_dict, monthly_perf)
+    save_outputs(stats, monthly_perf)
 
     # Print summary
-    print_summary(stats_dict)
+    print_summary(stats)
 
     logger.info("Backtest analysis complete!")
 
