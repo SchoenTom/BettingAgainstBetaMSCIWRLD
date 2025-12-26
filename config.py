@@ -1,8 +1,13 @@
 """
-config.py - Centralized configuration for BAB strategy project
+config.py - Centralized configuration for BAB (Betting Against Beta) strategy
 
 This module contains all configurable parameters used across the project.
-Modify these values to customize the strategy behavior.
+
+Key Design Decisions:
+- Date range starts from 2012 (URTH inception) to allow 60-month beta calculation
+- First valid betas available from 2017 (after 60 months of URTH data)
+- Uses URTH as MSCI World proxy (iShares MSCI World ETF)
+- 60-month rolling window for beta estimation (standard in literature)
 
 Author: BAB Strategy Implementation
 """
@@ -20,40 +25,44 @@ OUTPUT_DIR = os.path.join(PROJECT_DIR, 'output')
 # ============================================================================
 # Date Range Configuration
 # ============================================================================
-# For F&P 2014 replication: test ONLY until 2014 (publication year)
-# This avoids look-ahead bias - we test the period BEFORE the paper was published
-START_DATE = '1995-01-01'  # Earlier start to allow 5Y beta estimation
-END_DATE = '2014-01-01'    # F&P publication year - NO look-ahead!
+# IMPORTANT: URTH (iShares MSCI World ETF) started trading in January 2012.
+# We need 60 months of data to compute the first valid rolling beta.
+# Therefore: First valid beta = January 2017
+#
+# START_DATE: When to start downloading price data (need 5 years before first beta)
+# END_DATE: End of analysis period
+START_DATE = '2012-01-01'  # URTH inception - need full history for beta calculation
+END_DATE = '2024-12-31'    # Current analysis end
 
 # ============================================================================
 # Beta Calculation Configuration
 # ============================================================================
-ROLLING_WINDOW = 60  # Rolling window for beta calculation (months)
-MIN_PERIODS_BETA = 24  # Minimum periods required for beta calculation
+ROLLING_WINDOW = 60        # Rolling window for beta calculation (months)
+MIN_PERIODS_BETA = 36      # Minimum periods required (allows partial window if needed)
 
 # ============================================================================
 # Portfolio Construction Configuration
 # ============================================================================
-NUM_QUINTILES = 5  # Number of beta groups (quintiles)
+NUM_QUINTILES = 5          # Number of beta groups (quintiles: Q1=low, Q5=high)
+MIN_STOCKS_PER_QUINTILE = 5  # Minimum stocks needed per quintile
 
 # ============================================================================
 # Benchmark Configuration
 # ============================================================================
-MSCI_WORLD_PROXY = 'URTH'  # iShares MSCI World ETF
+MSCI_WORLD_PROXY = 'URTH'  # iShares MSCI World ETF (inception: Jan 2012)
 RISK_FREE_TICKER = '^IRX'  # 3-month T-bill rate
 
 # ============================================================================
 # Data Download Configuration
 # ============================================================================
-DOWNLOAD_BATCH_SIZE = 50  # Number of tickers per batch download
+DOWNLOAD_BATCH_SIZE = 50   # Number of tickers per batch download
 DOWNLOAD_INTERVAL = '1mo'  # Monthly data
 
 # ============================================================================
 # Backtest Configuration
 # ============================================================================
-PERIODS_PER_YEAR = 12  # Monthly data
-RISK_FREE_RATE_BACKTEST = 0  # Assume 0 for Sharpe calculation
-ROLLING_SHARPE_WINDOW = 12  # Window for rolling Sharpe ratio
+PERIODS_PER_YEAR = 12      # Monthly data
+ROLLING_SHARPE_WINDOW = 12 # Window for rolling Sharpe ratio
 
 # ============================================================================
 # Visualization Configuration
@@ -70,47 +79,48 @@ COLORS = {
 }
 
 # ============================================================================
-# MSCI World Constituents
-# Representative sample of major developed market stocks
+# MSCI World Constituents - Curated List
+# Representative sample of major developed market stocks with long histories
+# Focus on stocks that existed before 2012 to maximize data availability
 # ============================================================================
 MSCI_WORLD_TICKERS = [
-    # United States - Large Cap (Top 100)
-    'AAPL', 'MSFT', 'GOOGL', 'GOOG', 'AMZN', 'NVDA', 'META', 'TSLA', 'BRK-B',
-    'UNH', 'JNJ', 'JPM', 'V', 'PG', 'XOM', 'HD', 'CVX', 'MA', 'ABBV',
-    'MRK', 'LLY', 'PEP', 'KO', 'COST', 'AVGO', 'BAC', 'MCD', 'CSCO', 'WMT',
+    # United States - Large Cap (established companies with long histories)
+    'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'JPM', 'JNJ', 'V', 'PG', 'XOM', 'HD',
+    'CVX', 'MA', 'ABBV', 'MRK', 'PEP', 'KO', 'BAC', 'MCD', 'CSCO', 'WMT',
     'TMO', 'PFE', 'ABT', 'CRM', 'ACN', 'ADBE', 'DHR', 'NKE', 'TXN', 'NFLX',
-    'ORCL', 'AMD', 'UNP', 'PM', 'RTX', 'NEE', 'LOW', 'QCOM', 'INTC', 'LIN',
+    'ORCL', 'UNP', 'PM', 'RTX', 'NEE', 'LOW', 'QCOM', 'INTC', 'LIN',
     'BMY', 'CMCSA', 'AMGN', 'T', 'VZ', 'UPS', 'HON', 'COP', 'SBUX', 'IBM',
     'GS', 'CAT', 'BA', 'MMM', 'DE', 'BLK', 'AXP', 'GILD', 'MS', 'CVS',
-    'MDLZ', 'GE', 'SCHW', 'C', 'INTU', 'ADI', 'PLD', 'AMT', 'NOW', 'ISRG',
-    'ZTS', 'SYK', 'BKNG', 'VRTX', 'ADP', 'MMC', 'SPGI', 'MO', 'CB', 'BDX',
-    'REGN', 'ETN', 'TJX', 'LRCX', 'DUK', 'SO', 'CME', 'PGR', 'WM', 'CI',
+    'MDLZ', 'GE', 'C', 'ADI', 'PLD', 'AMT', 'ISRG',
+    'ZTS', 'SYK', 'BKNG', 'ADP', 'MMC', 'SPGI', 'MO', 'CB', 'BDX',
+    'ETN', 'TJX', 'DUK', 'SO', 'CME', 'PGR', 'WM', 'CI',
+    'UNH', 'LLY', 'COST', 'AVGO', 'AMD',
 
-    # Japan (ADRs and liquid tickers)
-    'TM', 'SONY', 'MUFG', 'SMFG', 'HMC', 'NTT', 'MFG', 'NTDOY',
+    # Japan (ADRs with long histories)
+    'TM', 'SONY', 'MUFG', 'SMFG', 'HMC', 'NTT', 'MFG',
 
     # United Kingdom
-    'BP', 'SHEL', 'HSBC', 'GSK', 'AZN', 'UL', 'RIO', 'BHP', 'BTI', 'LYG',
-    'NWG', 'VOD', 'DEO',
+    'BP', 'SHEL', 'HSBC', 'GSK', 'AZN', 'UL', 'RIO', 'BHP', 'BTI',
+    'VOD', 'DEO',
 
     # Germany
-    'SAP', 'DB', 'DTEGY', 'BASFY', 'BAYRY', 'SIEGY', 'VWAGY',
+    'SAP', 'DB', 'SIEGY',
 
     # France
-    'TTE', 'SNY', 'LVMUY', 'LRLCY', 'BNPQY',
+    'TTE', 'SNY',
 
     # Switzerland
-    'NSRGY', 'NVS', 'RHHBY', 'UBS',
+    'NSRGY', 'NVS', 'UBS',
 
     # Netherlands
-    'ASML', 'ING', 'NVO',
+    'ASML', 'ING',
 
     # Canada
     'TD', 'RY', 'BNS', 'CNQ', 'ENB', 'CP', 'CNI', 'TRP', 'BMO', 'CM',
     'SU', 'MFC', 'BCE',
 
-    # Other Developed Markets
-    'TSM',  # Taiwan (often included in MSCI World calculations)
+    # Taiwan
+    'TSM',
 ]
 
 
@@ -120,9 +130,21 @@ def ensure_directories():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 
+def get_date_info():
+    """Return formatted date information for logging."""
+    return {
+        'start': START_DATE,
+        'end': END_DATE,
+        'first_beta_date': '2017-01-01',  # 60 months after START_DATE
+        'note': 'URTH inception: 2012-01, first valid beta: 2017-01'
+    }
+
+
 if __name__ == '__main__':
     print(f"Project Directory: {PROJECT_DIR}")
     print(f"Data Directory: {DATA_DIR}")
     print(f"Output Directory: {OUTPUT_DIR}")
     print(f"Date Range: {START_DATE} to {END_DATE}")
+    print(f"Rolling Window: {ROLLING_WINDOW} months")
     print(f"Number of Tickers: {len(MSCI_WORLD_TICKERS)}")
+    print(f"First valid beta date: ~2017-01 (60 months after URTH inception)")
