@@ -301,9 +301,14 @@ def get_market_cap_data(tickers: List[str], prices_df: pd.DataFrame) -> pd.DataF
 
     # For stocks without shares data, use price as proxy (will be normalized anyway)
     for ticker in tickers:
-        if ticker in prices_df.columns and market_caps[ticker].isna().all():
-            # Use relative price as proxy - not ideal but better than nothing
-            market_caps[ticker] = prices_df[ticker]
+        try:
+            if ticker in list(prices_df.columns):
+                if ticker in list(market_caps.columns):
+                    if market_caps[ticker].isna().all():
+                        # Use relative price as proxy - not ideal but better than nothing
+                        market_caps[ticker] = prices_df[ticker]
+        except Exception:
+            pass
 
     return market_caps
 
@@ -635,6 +640,12 @@ class AcademicBAB:
                     shrinkage=SHRINKAGE_FACTOR if self.apply_shrinkage else 1.0,
                     prior=PRIOR_BETA
                 )
+
+        # Cap extreme betas (F&P don't use betas outside reasonable range)
+        # Typical range: 0.0 to 3.0
+        MIN_BETA = 0.1
+        MAX_BETA = 3.0
+        betas = betas.clip(lower=MIN_BETA, upper=MAX_BETA)
 
         self.betas = betas
 
