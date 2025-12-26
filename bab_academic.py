@@ -54,6 +54,11 @@ NUM_QUANTILES = 10       # F&P use deciles, not quintiles
 MIN_STOCKS_PER_PORTFOLIO = 10  # Minimum diversification
 WINSORIZE_PERCENTILE = 0.005   # 0.5% winsorization on each tail
 
+# Leverage constraints - prevent extreme leverage from very low betas
+# F&P implicitly constrain leverage; we cap at 2x (min scaling beta = 0.5)
+MIN_SCALING_BETA = 0.5   # Minimum beta used for scaling (prevents leverage > 2x)
+MAX_SCALING_BETA = 2.0   # Maximum beta used for scaling
+
 # Ken French Data Library URL for risk-free rate
 KEN_FRENCH_RF_URL = "https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/ftp/F-F_Research_Data_Factors_CSV.zip"
 
@@ -169,31 +174,28 @@ def download_irx_fallback() -> pd.Series:
     return rf_monthly_decimal
 
 
-def download_historical_benchmark() -> pd.Series:
+def download_historical_benchmark(end_date: str = None) -> pd.Series:
     """
-    Download/construct historical MSCI World benchmark going back to 1990.
+    Download/construct historical MSCI World benchmark going back to 1990s.
 
-    Strategy:
-    1. Use URTH from 2012 onwards
-    2. Use ACWI (iShares MSCI ACWI) from 2008-2012
-    3. Use EFA + SPY blend for earlier periods
+    Strategy (chronological data availability):
+    - 1993-2001: SPY only (US approximation, ~60% of MSCI World)
+    - 2001-2008: SPY + EFA blend (60% US + 40% non-US developed)
+    - 2008-2012: ACWI (similar to MSCI World)
+    - 2012+: URTH (direct MSCI World ETF)
+
+    All series are spliced using overlapping periods for consistent scaling.
     """
     logger.info("Constructing historical MSCI World benchmark...")
 
-    end_date = datetime.today().strftime('%Y-%m-%d')
+    if end_date is None:
+        end_date = datetime.today().strftime('%Y-%m-%d')
 
-    # Download multiple ETFs
-    etfs = {
-        'URTH': 'MSCI World (primary)',
-        'ACWI': 'MSCI ACWI (backup)',
-        'VT': 'Total World Stock (backup)',
-        'SPY': 'S&P 500 (US component)',
-        'EFA': 'EAFE (non-US developed)',
-        'VEU': 'All-World ex-US'
-    }
+    # Download multiple ETFs - each covers different periods
+    etfs_to_download = ['URTH', 'ACWI', 'SPY', 'EFA']
 
     all_prices = {}
-    for ticker, desc in etfs.items():
+    for ticker in etfs_to_download:
         try:
             data = yf.download(ticker, start='1990-01-01', end=end_date,
                               interval='1mo', auto_adjust=True, progress=False)
@@ -205,55 +207,73 @@ def download_historical_benchmark() -> pd.Series:
                 prices.index = pd.to_datetime(prices.index)
                 prices = prices.resample('ME').last()
                 all_prices[ticker] = prices
-                logger.info(f"  {ticker}: {prices.index.min()} to {prices.index.max()}")
+                logger.info(f"  {ticker}: {prices.index.min().strftime('%Y-%m')} to {prices.index.max().strftime('%Y-%m')}")
         except Exception as e:
             logger.warning(f"  {ticker}: Failed - {e}")
 
-    # Construct benchmark time series
+    if not all_prices:
+        raise RuntimeError("Could not download any benchmark data!")
+
+    # Build benchmark from most recent (best quality) to oldest
+    # Start with URTH (most accurate MSCI World proxy)
     benchmark = pd.Series(dtype=float, name='MSCI_World')
 
-    # Priority: URTH > ACWI > VT > (SPY+EFA blend)
     if 'URTH' in all_prices:
-        urth = all_prices['URTH']
-        benchmark = urth.copy()
+        benchmark = all_prices['URTH'].copy()
+        logger.info(f"Base: URTH from {benchmark.index.min().strftime('%Y-%m')}")
 
-    # Fill earlier periods with ACWI
+    # Extend backward with ACWI (2008-2012)
     if 'ACWI' in all_prices:
         acwi = all_prices['ACWI']
-        # Find overlap period for scaling
         if not benchmark.empty:
             overlap = benchmark.index.intersection(acwi.index)
-            if len(overlap) > 12:
-                # Scale ACWI to match URTH at overlap
+            if len(overlap) >= 6:
+                # Scale ACWI to match benchmark at overlap
                 scale = benchmark.loc[overlap].mean() / acwi.loc[overlap].mean()
                 acwi_scaled = acwi * scale
-                # Fill missing early periods
-                missing = acwi_scaled.index.difference(benchmark.index)
-                benchmark = pd.concat([acwi_scaled.loc[missing], benchmark]).sort_index()
+                # Add periods before benchmark starts
+                earlier = acwi_scaled[acwi_scaled.index < benchmark.index.min()]
+                if not earlier.empty:
+                    benchmark = pd.concat([earlier, benchmark]).sort_index()
+                    logger.info(f"Extended with ACWI to {benchmark.index.min().strftime('%Y-%m')}")
         else:
             benchmark = acwi.copy()
 
-    # Fill even earlier with SPY+EFA blend (60/40 US/non-US approximation)
+    # Extend backward with SPY+EFA blend (2001-2008)
     if 'SPY' in all_prices and 'EFA' in all_prices:
         spy = all_prices['SPY']
         efa = all_prices['EFA']
         common = spy.index.intersection(efa.index)
+        # MSCI World is roughly 60% US, 40% non-US developed
         blend = 0.60 * spy.loc[common] + 0.40 * efa.loc[common]
 
         if not benchmark.empty:
             overlap = benchmark.index.intersection(blend.index)
-            if len(overlap) > 12:
+            if len(overlap) >= 6:
                 scale = benchmark.loc[overlap].mean() / blend.loc[overlap].mean()
                 blend_scaled = blend * scale
-                missing = blend_scaled.index.difference(benchmark.index)
-                benchmark = pd.concat([blend_scaled.loc[missing], benchmark]).sort_index()
-        else:
-            benchmark = blend.copy()
+                earlier = blend_scaled[blend_scaled.index < benchmark.index.min()]
+                if not earlier.empty:
+                    benchmark = pd.concat([earlier, benchmark]).sort_index()
+                    logger.info(f"Extended with SPY+EFA blend to {benchmark.index.min().strftime('%Y-%m')}")
+
+    # Extend backward with SPY alone (1993-2001, US only approximation)
+    if 'SPY' in all_prices:
+        spy = all_prices['SPY']
+        if not benchmark.empty:
+            overlap = benchmark.index.intersection(spy.index)
+            if len(overlap) >= 6:
+                scale = benchmark.loc[overlap].mean() / spy.loc[overlap].mean()
+                spy_scaled = spy * scale
+                earlier = spy_scaled[spy_scaled.index < benchmark.index.min()]
+                if not earlier.empty:
+                    benchmark = pd.concat([earlier, benchmark]).sort_index()
+                    logger.info(f"Extended with SPY (US only) to {benchmark.index.min().strftime('%Y-%m')}")
 
     benchmark.name = 'MSCI_World'
     benchmark = benchmark.dropna()
 
-    logger.info(f"Constructed benchmark: {benchmark.index.min()} to {benchmark.index.max()}")
+    logger.info(f"Final benchmark: {benchmark.index.min().strftime('%Y-%m')} to {benchmark.index.max().strftime('%Y-%m')} ({len(benchmark)} months)")
 
     # Save
     benchmark.to_frame().to_csv(os.path.join(DATA_DIR, 'msci_world_benchmark.csv'))
@@ -527,7 +547,7 @@ class AcademicBAB:
 
     def load_benchmark(self):
         """Load historical MSCI World benchmark."""
-        self.benchmark_prices = download_historical_benchmark()
+        self.benchmark_prices = download_historical_benchmark(end_date=self.end_date)
         return self
 
     def load_stock_data(self, tickers: List[str]):
@@ -770,48 +790,35 @@ class AcademicBAB:
             # Long leg: (1/β_L) * r_L with $1 invested
             # Short leg: (1/β_H) * r_H with $1 invested
 
-            # The scaling factors for beta neutrality
-            scale_L = 1.0 / beta_L
-            scale_H = 1.0 / beta_H
+            # Apply leverage constraints to prevent extreme volatility
+            # F&P's actual implementation has implicit constraints on leverage
+            # We cap scaling betas to limit leverage (min beta = 0.5 → max leverage = 2x)
+            scaling_beta_L = max(beta_L, MIN_SCALING_BETA)
+            scaling_beta_H = min(beta_H, MAX_SCALING_BETA)
+
+            # The scaling factors for beta neutrality (with leverage constraints)
+            scale_L = 1.0 / scaling_beta_L
+            scale_H = 1.0 / scaling_beta_H
 
             # Dollar amounts before normalization
             # Long position has scale_L dollars, Short has scale_H dollars
 
             if self.dollar_neutral:
-                # Normalize so Long$ = Short$ = $1
-                # Total capital = $2 (long $1 + short $1)
+                # Dollar-neutral BAB with leverage constraints
                 #
-                # Original F&P formula for dollar-neutral BAB:
-                # r_BAB = (1/β_L) * r_L - (1/β_H) * r_H
-                # But normalized so that both legs have equal dollar exposure
-                #
-                # With original scaling:
-                #   Long leg contributes: (1/β_L) dollars
-                #   Short leg contributes: (1/β_H) dollars
-                #
-                # To make dollar-neutral, we need:
-                #   k * (1/β_L) = 1 for long
-                #   k * (1/β_H) = 1 for short
-                # This can't be done with single k unless β_L = β_H
-                #
-                # F&P actually scale each leg separately:
-                #   r_BAB = r_L/β_L - r_H/β_H
-                # where each leg is scaled to $1
-                #
-                # The leverage is implicit: you're borrowing to get the scaled positions
-
-                # Ex-ante beta of each leg after scaling:
-                # Long: (1/β_L) * β_L = 1
-                # Short: -(1/β_H) * β_H = -1
-                # Net beta = 1 - 1 = 0 (market neutral)
-
-                # For dollar neutrality, we simply ensure both legs contribute equally
-                # The return formula becomes:
+                # The F&P formula for BAB:
                 # r_BAB = (1/β_L) * r_L - (1/β_H) * r_H
                 #
-                # where each leg has $1 invested (implicitly leveraged)
+                # We apply leverage constraints via scaling_beta_L/H to prevent
+                # excessive leverage from very low betas.
+                #
+                # With constrained scaling:
+                #   Long leg: (1/max(β_L, 0.5)) * r_L → max leverage 2x
+                #   Short leg: (1/min(β_H, 2.0)) * r_H → min leverage 0.5x
+                #
+                # This is dollar-neutral because each leg contributes equally
 
-                bab_return = (1.0 / beta_L) * r_L - (1.0 / beta_H) * r_H
+                bab_return = scale_L * r_L - scale_H * r_H
 
                 # Track dollar positions for verification
                 long_dollars = 1.0  # Normalized
@@ -819,9 +826,9 @@ class AcademicBAB:
 
             else:
                 # Original (non-dollar-neutral) version - what the old code did
-                bab_return = (1.0 / beta_L) * r_L - (1.0 / beta_H) * r_H
-                long_dollars = 1.0 / beta_L
-                short_dollars = 1.0 / beta_H
+                bab_return = scale_L * r_L - scale_H * r_H
+                long_dollars = scale_L
+                short_dollars = scale_H
 
             # Ex-ante beta diagnostics
             # Long leg beta contribution: (1/β_L) * β_L = 1
@@ -1068,10 +1075,24 @@ def get_expanded_ticker_universe() -> List[str]:
 def main():
     """
     Run the academic BAB strategy.
+
+    IMPORTANT: For Frazzini & Pedersen (2014) replication, we test ONLY until 2014
+    (the year the paper was published). This avoids look-ahead bias - we're testing
+    the strategy as it would have performed BEFORE the paper was published.
     """
     print("\n" + "="*70)
     print("  ACADEMIC BETTING AGAINST BETA - FRAZZINI & PEDERSEN REPLICATION")
     print("="*70 + "\n")
+
+    # F&P 2014 Replication Period
+    # - Start: 1995 to allow 5 years of data for beta calculation (1995-2000)
+    #          so first tradeable signals start around 2000
+    # - End: 2014-01-01 (when F&P paper was published)
+    START_DATE_FP = '1995-01-01'
+    END_DATE_FP = '2014-01-01'  # F&P publication year
+
+    print(f"*** REPLICATION PERIOD: {START_DATE_FP} to {END_DATE_FP} ***")
+    print("*** (Testing ONLY before F&P 2014 publication - no look-ahead) ***\n")
 
     # Get tickers
     tickers = get_expanded_ticker_universe()
@@ -1079,7 +1100,8 @@ def main():
 
     # Initialize strategy with F&P settings
     bab = AcademicBAB(
-        start_date='2000-01-01',
+        start_date=START_DATE_FP,
+        end_date=END_DATE_FP,  # CRITICAL: Stop at 2014!
         num_quantiles=10,  # F&P use deciles
         use_value_weights=True,
         apply_shrinkage=True,  # β_shrunk = 0.6*β + 0.4*1

@@ -20,8 +20,10 @@ OUTPUT_DIR = os.path.join(PROJECT_DIR, 'output')
 # ============================================================================
 # Date Range Configuration
 # ============================================================================
-START_DATE = '2000-01-01'
-END_DATE = datetime.today().strftime('%Y-%m-%d')
+# For F&P 2014 replication: test ONLY until 2014 (publication year)
+# This avoids look-ahead bias - we test the period BEFORE the paper was published
+START_DATE = '1995-01-01'  # Earlier start to allow 5Y beta estimation
+END_DATE = '2014-01-01'    # F&P publication year - NO look-ahead!
 
 # ============================================================================
 # Beta Calculation Configuration

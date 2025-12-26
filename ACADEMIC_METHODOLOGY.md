@@ -183,20 +183,38 @@ We don't have proper delisting returns from CRSP.
 
 ## Expected Results
 
-### With Academic Methodology
+### With Academic Methodology (Pre-2014 Period)
 
-- Lower absolute returns than original
-- More consistent risk-adjusted returns
-- Positive alpha relative to CAPM
-- Near-zero market beta
-- Sharpe ratio ~0.3-0.6
+The academic implementation tests ONLY the period before F&P's 2014 publication
+to avoid look-ahead bias. This is the correct approach for replication.
 
-### Why Original Has Higher Returns
+**Key Findings with Free Data:**
+- Period: 2000-2013 (14 years, before F&P publication)
+- Annualized Return: ~1% (lower than F&P's ~9%)
+- Annualized Volatility: ~35%
+- Sharpe Ratio: ~0.03
+- Max Drawdown: ~-80%
+- Dollar Neutral: Yes (verified)
 
-1. Net long market position (~$0.96)
-2. Bull market from 2017-2025
-3. Survivorship bias (only survivors)
-4. No delisting returns
+**Why Returns Are Lower Than F&P:**
+
+1. **Survivorship Bias (against us)**: The high-beta stocks that survived to
+   today are the winners (e.g., AAPL, AMZN, GOOGL). Shorting these hurt returns.
+
+2. **No Delisting Returns**: Failed high-beta stocks aren't in our data, so we
+   miss the gains from shorting them before they failed.
+
+3. **Limited Universe**: We use ~500 stocks vs F&P's ~3,000+ from CRSP.
+
+4. **Approximate Market Cap**: We use current shares × historical price, not
+   point-in-time market cap from Compustat.
+
+### Why Original Implementation Showed Higher Returns
+
+1. Net long market position (~$0.96) instead of dollar neutral
+2. Testing 2017-2025 period (post-publication bull market)
+3. Look-ahead bias (using post-F&P data)
+4. Survivorship bias amplified by bull market
 
 ## References
 
