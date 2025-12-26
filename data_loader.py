@@ -297,30 +297,54 @@ def download_msci_world_proxy(start_date, end_date):
         prices.name = 'MSCI_World'
         return prices
 
-    # Align all indices to common dates
+    # Create DataFrame with all returns (allows NaN for missing indices)
     returns_df = pd.DataFrame(index_returns)
-    common_dates = returns_df.dropna().index
+    all_dates = returns_df.index.sort_values()
 
-    if len(common_dates) < 12:
-        logger.warning("Too few common dates, falling back to S&P 500")
+    logger.info(f"Index data ranges:")
+    for col in returns_df.columns:
+        valid = returns_df[col].dropna()
+        logger.info(f"  {col}: {valid.index.min().strftime('%Y-%m')} to {valid.index.max().strftime('%Y-%m')} ({len(valid)} months)")
+
+    # Compute weighted composite returns for each month
+    # Use dynamic weighting based on available indices per month
+    composite_returns = pd.Series(index=all_dates, dtype=float)
+
+    for date in all_dates:
+        row = returns_df.loc[date]
+        available = row.dropna()
+
+        if len(available) == 0:
+            composite_returns.loc[date] = np.nan
+            continue
+
+        # Compute weights for available indices
+        total_weight = sum(MSCI_WORLD_PROXIES.get(ticker, 0) for ticker in available.index)
+        if total_weight == 0:
+            composite_returns.loc[date] = np.nan
+            continue
+
+        # Weighted average of available indices
+        weighted_return = 0.0
+        for ticker in available.index:
+            weight = MSCI_WORLD_PROXIES.get(ticker, 0) / total_weight
+            weighted_return += available[ticker] * weight
+
+        composite_returns.loc[date] = weighted_return
+
+    # Remove any remaining NaN values
+    composite_returns = composite_returns.dropna()
+    composite_returns.name = 'MSCI_World'
+
+    if len(composite_returns) < 12:
+        logger.warning("Too few valid dates, falling back to S&P 500")
         prices = download_benchmark(start_date, end_date, BENCHMARK_TICKER)
         prices.name = 'MSCI_World'
         return prices
 
-    # Re-weight based on available indices
-    weights = {}
-    for ticker in returns_df.columns:
-        original_weight = MSCI_WORLD_PROXIES.get(ticker, 0)
-        weights[ticker] = original_weight / available_weight
-
-    logger.info(f"Re-weighted composition: {weights}")
-
-    # Compute weighted composite returns
-    composite_returns = pd.Series(0.0, index=common_dates)
-    for ticker, weight in weights.items():
-        composite_returns += returns_df.loc[common_dates, ticker] * weight
-
-    composite_returns.name = 'MSCI_World'
+    logger.info(f"MSCI World proxy: {len(composite_returns)} months")
+    logger.info(f"Date range: {composite_returns.index.min().strftime('%Y-%m')} to {composite_returns.index.max().strftime('%Y-%m')}")
+    logger.info(f"Annualized return: {composite_returns.mean() * 12 * 100:.2f}%")
 
     # Convert returns to price series (starting at 100)
     composite_prices = (1 + composite_returns).cumprod() * 100
@@ -329,9 +353,6 @@ def download_msci_world_proxy(start_date, end_date):
     composite_prices.loc[first_date] = 100.0
     composite_prices = composite_prices.sort_index()
     composite_prices.name = 'MSCI_World'
-
-    logger.info(f"MSCI World proxy: {len(composite_prices)} months")
-    logger.info(f"Annualized return: {composite_returns.mean() * 12 * 100:.2f}%")
 
     return composite_prices
 
