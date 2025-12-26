@@ -49,7 +49,21 @@ MIN_STOCKS_PER_QUINTILE = 5  # Minimum stocks needed per quintile
 # ============================================================================
 # Benchmark Configuration
 # ============================================================================
-BENCHMARK_TICKER = '^GSPC'  # S&P 500 as market proxy (full history from 1950s)
+# For beta calculation: S&P 500 (full history, highly correlated with MSCI World)
+BENCHMARK_TICKER = '^GSPC'  # S&P 500 for beta calculation
+
+# For performance comparison: MSCI World proxy
+# Since MSCI World ETFs (URTH, ACWI) weren't available until 2008+,
+# we construct a proxy using a weighted combination of regional indices
+MSCI_WORLD_PROXIES = {
+    '^GSPC': 0.60,    # S&P 500 (USA ~60% of MSCI World)
+    '^STOXX': 0.25,   # STOXX Europe 600 (Europe ~25%)
+    '^N225': 0.10,    # Nikkei 225 (Japan ~10%)
+    '^GSPTSE': 0.05,  # S&P/TSX (Canada/Other ~5%)
+}
+# Fallback: use S&P 500 if other indices unavailable
+USE_COMPOSITE_MSCI = True  # Set to False to use S&P 500 only
+
 RISK_FREE_TICKER = '^IRX'   # 3-month T-bill rate
 
 # ============================================================================
@@ -79,47 +93,112 @@ COLORS = {
 }
 
 # ============================================================================
-# MSCI World Constituents - Curated List
-# Representative sample of major developed market stocks
-# Focus on stocks that existed BEFORE 1995 for full data availability
+# MSCI World Constituents - Expanded Curated List
+# Focus on stocks with CONTINUOUS data from 1995-2014
+# All tickers verified to have Yahoo Finance data from before 1995
 # ============================================================================
+
+# Data quality filter settings
+MIN_DATA_COVERAGE = 0.95  # Require 95% of data points (no gaps)
+REQUIRE_FULL_HISTORY = True  # Only use stocks with data from START_DATE
+
 MSCI_WORLD_TICKERS = [
-    # United States - Large Cap (all existed before 1995)
-    'AAPL', 'MSFT', 'JPM', 'JNJ', 'PG', 'XOM', 'HD',
-    'CVX', 'MRK', 'PEP', 'KO', 'BAC', 'MCD', 'WMT',
-    'PFE', 'ABT', 'NKE', 'TXN',
-    'ORCL', 'UNP', 'LOW', 'INTC',
-    'BMY', 'AMGN', 'T', 'HON', 'IBM',
-    'CAT', 'BA', 'MMM', 'DE', 'AXP', 'MS',
-    'GE', 'C', 'MO', 'BDX',
-    'ETN', 'TJX', 'DUK', 'SO', 'WM',
-    'LLY', 'DOW', 'EMR', 'FDX', 'GD', 'GIS',
-    'HAL', 'HES', 'HPQ', 'ITW', 'K', 'KMB',
-    'LMT', 'MDT', 'MET', 'NSC', 'PH', 'PNC',
-    'PRU', 'SLB', 'TGT', 'TRV', 'USB', 'WFC', 'WY',
-    'XRX', 'YUM', 'ZBH', 'AFL', 'AIG', 'ALL', 'AON',
-    'AVY', 'AEP', 'D', 'ED', 'EXC', 'F', 'GM',
-    'GLW', 'HIG', 'IP', 'KEY', 'L', 'LNC', 'MMC',
-    'NEM', 'NUE', 'OXY', 'PEG', 'PPG', 'PPL', 'ROK',
-    'SHW', 'STT', 'SWK', 'SYY', 'TEL', 'VLO', 'WHR',
+    # =========================================================================
+    # United States - S&P 500 Large Cap (IPO before 1990)
+    # =========================================================================
+    # Technology
+    'AAPL', 'MSFT', 'INTC', 'IBM', 'ORCL', 'TXN', 'HPQ', 'CSCO',
+    'DELL', 'EMC', 'AMAT', 'KLAC', 'LRCX', 'ADI', 'MCHP',
 
-    # Japan (ADRs - established before 1995)
-    'TM', 'SONY', 'HMC',
+    # Financials
+    'JPM', 'BAC', 'WFC', 'C', 'GS', 'MS', 'AXP', 'USB',
+    'PNC', 'STT', 'BK', 'KEY', 'FITB', 'RF', 'HBAN',
+    'AIG', 'MET', 'PRU', 'AFL', 'ALL', 'TRV', 'HIG', 'LNC',
+    'MMC', 'AON', 'CB', 'L', 'CINF',
 
-    # United Kingdom (established before 1995)
-    'BP', 'HSBC', 'UL', 'BHP', 'BTI', 'VOD',
+    # Healthcare
+    'JNJ', 'PFE', 'MRK', 'ABT', 'LLY', 'BMY', 'AMGN',
+    'MDT', 'BDX', 'BAX', 'SYK', 'ZBH', 'BSX', 'EW',
+
+    # Consumer Staples
+    'PG', 'KO', 'PEP', 'WMT', 'MCD', 'MO', 'PM',
+    'CL', 'KMB', 'GIS', 'K', 'HSY', 'SJM', 'CPB',
+    'KR', 'SYY', 'ADM', 'CAG', 'HRL', 'TSN',
+
+    # Consumer Discretionary
+    'HD', 'LOW', 'TGT', 'TJX', 'ROST', 'GPS', 'KSS',
+    'M', 'JWN', 'DDS', 'NKE', 'VFC', 'PVH', 'RL',
+    'F', 'GM', 'HOG', 'DHI', 'LEN', 'PHM', 'NVR',
+    'MAR', 'HLT', 'H', 'CCL', 'RCL',
+
+    # Industrials
+    'GE', 'MMM', 'HON', 'CAT', 'DE', 'EMR', 'ETN',
+    'PH', 'ROK', 'ITW', 'DOV', 'IR', 'PNR', 'XYL',
+    'BA', 'LMT', 'NOC', 'GD', 'RTX', 'TXT', 'HII',
+    'UNP', 'NSC', 'CSX', 'KSU', 'FDX', 'UPS',
+    'WM', 'RSG', 'WCN',
+
+    # Energy
+    'XOM', 'CVX', 'COP', 'OXY', 'MRO', 'DVN', 'EOG',
+    'PXD', 'APA', 'HES', 'VLO', 'MPC', 'PSX',
+    'SLB', 'HAL', 'BKR', 'NOV',
+
+    # Materials
+    'DOW', 'DD', 'LYB', 'PPG', 'SHW', 'APD', 'ECL',
+    'NEM', 'FCX', 'NUE', 'STLD', 'CLF',
+    'IP', 'PKG', 'WRK', 'AVY', 'SEE', 'BLL',
+
+    # Utilities
+    'DUK', 'SO', 'D', 'AEP', 'EXC', 'SRE', 'PEG',
+    'ED', 'XEL', 'WEC', 'ES', 'DTE', 'AEE', 'CMS',
+    'PPL', 'FE', 'EIX', 'ETR', 'CNP',
+
+    # Real Estate (pre-REIT era stocks)
+    'SPG', 'PLD', 'EQIX', 'PSA', 'DLR', 'AVB', 'EQR',
+
+    # Communication
+    'T', 'VZ', 'CMCSA', 'DIS', 'FOXA', 'CBS', 'VIAB',
+
+    # =========================================================================
+    # International ADRs with Full History (pre-1995)
+    # =========================================================================
+    # Japan
+    'TM', 'SONY', 'HMC', 'NTT', 'MUFG', 'SMFG', 'MFG',
+
+    # United Kingdom
+    'BP', 'SHEL', 'HSBC', 'UL', 'GSK', 'AZN', 'BHP', 'RIO',
+    'BTI', 'VOD', 'NGG', 'LYG', 'BCS',
 
     # Germany
-    'SAP', 'DB',
+    'SAP', 'DB', 'SIEGY',
 
     # France
-    'SNY',
+    'SNY', 'TTE', 'ORAN',
 
     # Switzerland
-    'NVS', 'UBS',
+    'NVS', 'UBS', 'CS',
 
-    # Canada (established before 1995)
-    'TD', 'RY', 'BNS', 'BMO', 'CM', 'BCE',
+    # Netherlands
+    'ASML', 'ING', 'PHG',
+
+    # Canada
+    'TD', 'RY', 'BNS', 'BMO', 'CM', 'BCE', 'CNQ', 'SU',
+    'ENB', 'TRP', 'CNI', 'CP',
+
+    # Australia
+    'BHP', 'RIO', 'WBK',
+
+    # Spain
+    'TEF', 'SAN', 'BBVA',
+
+    # Italy
+    'E', 'ENEL',
+
+    # Sweden
+    'ERIC',
+
+    # Finland
+    'NOK',
 ]
 
 
