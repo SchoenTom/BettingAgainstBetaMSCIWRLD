@@ -8,8 +8,17 @@ This script executes all components in sequence:
 3. backtest.py - Compute performance statistics
 4. illustrations.py - Generate visualizations
 
+NEW: Academic mode (--academic) runs Frazzini & Pedersen (2014) methodology:
+- Dollar-neutral portfolio construction
+- Beta shrinkage (0.6*β + 0.4)
+- 1-month T-bill from Ken French
+- Value-weighted portfolios
+- Proper beta estimation (1Y corr, 5Y vol)
+
 Usage:
     python main.py [--skip-download] [--skip-plots]
+    python main.py --academic          # Run F&P methodology
+    python main.py --compare           # Compare both versions
 
 Author: BAB Strategy Implementation
 """
@@ -68,6 +77,26 @@ def run_illustrations():
     illustrations_main()
 
 
+def run_academic_bab():
+    """Run academic (Frazzini & Pedersen) BAB implementation."""
+    logger.info("=" * 70)
+    logger.info("ACADEMIC MODE: Running Frazzini & Pedersen (2014) BAB")
+    logger.info("=" * 70)
+
+    from bab_academic import main as academic_main
+    return academic_main()
+
+
+def run_comparison():
+    """Run comparison between original and academic implementations."""
+    logger.info("=" * 70)
+    logger.info("COMPARISON MODE: Original vs Academic BAB")
+    logger.info("=" * 70)
+
+    from compare_strategies import main as compare_main
+    return compare_main()
+
+
 def main():
     """
     Main entry point for running the complete BAB pipeline.
@@ -95,6 +124,16 @@ def main():
         action='store_true',
         help='Only run portfolio construction and backtest'
     )
+    parser.add_argument(
+        '--academic',
+        action='store_true',
+        help='Run academic (Frazzini & Pedersen 2014) BAB methodology'
+    )
+    parser.add_argument(
+        '--compare',
+        action='store_true',
+        help='Compare original vs academic implementations'
+    )
 
     args = parser.parse_args()
 
@@ -105,11 +144,41 @@ def main():
     print("  BETTING-AGAINST-BETA (BAB) STRATEGY - MSCI WORLD")
     print("=" * 70)
     print(f"  Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    if args.academic:
+        print("  MODE: Academic (Frazzini & Pedersen 2014)")
+    elif args.compare:
+        print("  MODE: Comparison Analysis")
+    else:
+        print("  MODE: Original Implementation")
     print("=" * 70)
     print("\n")
 
     try:
-        # Step 1: Data Loading
+        # Academic mode
+        if args.academic:
+            run_academic_bab()
+            elapsed_time = time.time() - start_time
+            print("\n")
+            print("=" * 70)
+            print("  ACADEMIC BAB COMPLETED")
+            print("=" * 70)
+            print(f"  Total runtime: {elapsed_time:.1f} seconds")
+            print("=" * 70)
+            return
+
+        # Comparison mode
+        if args.compare:
+            run_comparison()
+            elapsed_time = time.time() - start_time
+            print("\n")
+            print("=" * 70)
+            print("  COMPARISON ANALYSIS COMPLETED")
+            print("=" * 70)
+            print(f"  Total runtime: {elapsed_time:.1f} seconds")
+            print("=" * 70)
+            return
+
+        # Step 1: Data Loading (original mode)
         if args.only_download:
             run_data_loader()
             print("\n✓ Data download completed. Exiting as requested.")
