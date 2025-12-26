@@ -3,17 +3,17 @@ data_loader.py - Download and prepare data for Betting-Against-Beta strategy
 
 This script:
 1. Downloads monthly adjusted close prices for MSCI World constituents
-2. Downloads MSCI World proxy (URTH ETF) as benchmark
+2. Downloads S&P 500 (^GSPC) as market benchmark
 3. Downloads and processes risk-free rate (^IRX)
 4. Computes monthly returns and excess returns
 5. Computes rolling 60-month betas vs the benchmark
 6. Saves all outputs as CSVs
 
 Key Design:
-- Uses curated list of ~120 major stocks with long trading histories
-- URTH (iShares MSCI World ETF) as benchmark (inception: Jan 2012)
+- Uses curated list of major stocks from developed markets
+- S&P 500 (^GSPC) as benchmark (full history from 1950s)
 - 60-month rolling window for beta estimation
-- First valid betas available from ~Jan 2017
+- Date range: 1995-2014 (first valid betas from 2000)
 
 Author: BAB Strategy Implementation
 """
@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 # Import configuration
 from config import (
     START_DATE, END_DATE, ROLLING_WINDOW, MIN_PERIODS_BETA,
-    DATA_DIR, MSCI_WORLD_PROXY, MSCI_WORLD_TICKERS,
+    DATA_DIR, BENCHMARK_TICKER, MSCI_WORLD_TICKERS,
     DOWNLOAD_BATCH_SIZE, ensure_directories
 )
 
@@ -135,23 +135,23 @@ def download_monthly_prices(tickers, start_date, end_date):
     return all_data
 
 
-def download_benchmark(start_date, end_date, proxy=MSCI_WORLD_PROXY):
+def download_benchmark(start_date, end_date, ticker=BENCHMARK_TICKER):
     """
-    Download MSCI World proxy (URTH ETF) monthly prices.
+    Download market benchmark monthly prices.
 
     Args:
         start_date: Start date string
         end_date: End date string
-        proxy: Ticker symbol for MSCI World proxy
+        ticker: Ticker symbol for benchmark (default: ^GSPC)
 
     Returns:
         pd.Series: Monthly adjusted close prices
     """
-    logger.info(f"Downloading MSCI World proxy ({proxy})...")
+    logger.info(f"Downloading benchmark ({ticker})...")
 
     try:
         data = yf.download(
-            proxy,
+            ticker,
             start=start_date,
             end=end_date,
             interval='1mo',
@@ -160,7 +160,7 @@ def download_benchmark(start_date, end_date, proxy=MSCI_WORLD_PROXY):
         )
 
         if data.empty:
-            raise ValueError(f"No data returned for {proxy}")
+            raise ValueError(f"No data returned for {ticker}")
 
         # Extract Close prices
         if isinstance(data.columns, pd.MultiIndex):
@@ -177,7 +177,7 @@ def download_benchmark(start_date, end_date, proxy=MSCI_WORLD_PROXY):
         # Resample to month-end
         benchmark.index = pd.to_datetime(benchmark.index)
         benchmark = benchmark.resample('ME').last()
-        benchmark.name = 'MSCI_World'
+        benchmark.name = 'Benchmark'
 
         logger.info(f"Benchmark data: {len(benchmark)} months")
         logger.info(f"Date range: {benchmark.index.min()} to {benchmark.index.max()}")

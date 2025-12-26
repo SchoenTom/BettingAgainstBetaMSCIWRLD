@@ -4,9 +4,10 @@ config.py - Centralized configuration for BAB (Betting Against Beta) strategy
 This module contains all configurable parameters used across the project.
 
 Key Design Decisions:
-- Date range starts from 2012 (URTH inception) to allow 60-month beta calculation
-- First valid betas available from 2017 (after 60 months of URTH data)
-- Uses URTH as MSCI World proxy (iShares MSCI World ETF)
+- Beta estimation starts from 1995 (60-month rolling window)
+- BAB portfolio construction from 2000 (first valid betas)
+- End date: 2014 (before arbitrage profits disappear per academic literature)
+- Uses S&P 500 (^GSPC) as market benchmark (full history available)
 - 60-month rolling window for beta estimation (standard in literature)
 
 Author: BAB Strategy Implementation
@@ -25,14 +26,13 @@ OUTPUT_DIR = os.path.join(PROJECT_DIR, 'output')
 # ============================================================================
 # Date Range Configuration
 # ============================================================================
-# IMPORTANT: URTH (iShares MSCI World ETF) started trading in January 2012.
-# We need 60 months of data to compute the first valid rolling beta.
-# Therefore: First valid beta = January 2017
+# Beta estimation requires 60 months of data -> first valid beta at 2000-01
+# Analysis ends at 2014 (BAB arbitrage profits decline after this per literature)
 #
-# START_DATE: When to start downloading price data (need 5 years before first beta)
-# END_DATE: End of analysis period
-START_DATE = '2012-01-01'  # URTH inception - need full history for beta calculation
-END_DATE = '2024-12-31'    # Current analysis end
+# START_DATE: When to start downloading price data (1995 for beta estimation)
+# END_DATE: End of analysis period (2014)
+START_DATE = '1995-01-01'  # Start of beta estimation period
+END_DATE = '2014-12-31'    # End of analysis (before arbitrage profits disappear)
 
 # ============================================================================
 # Beta Calculation Configuration
@@ -49,8 +49,8 @@ MIN_STOCKS_PER_QUINTILE = 5  # Minimum stocks needed per quintile
 # ============================================================================
 # Benchmark Configuration
 # ============================================================================
-MSCI_WORLD_PROXY = 'URTH'  # iShares MSCI World ETF (inception: Jan 2012)
-RISK_FREE_TICKER = '^IRX'  # 3-month T-bill rate
+BENCHMARK_TICKER = '^GSPC'  # S&P 500 as market proxy (full history from 1950s)
+RISK_FREE_TICKER = '^IRX'   # 3-month T-bill rate
 
 # ============================================================================
 # Data Download Configuration
@@ -80,47 +80,46 @@ COLORS = {
 
 # ============================================================================
 # MSCI World Constituents - Curated List
-# Representative sample of major developed market stocks with long histories
-# Focus on stocks that existed before 2012 to maximize data availability
+# Representative sample of major developed market stocks
+# Focus on stocks that existed BEFORE 1995 for full data availability
 # ============================================================================
 MSCI_WORLD_TICKERS = [
-    # United States - Large Cap (established companies with long histories)
-    'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'JPM', 'JNJ', 'V', 'PG', 'XOM', 'HD',
-    'CVX', 'MA', 'ABBV', 'MRK', 'PEP', 'KO', 'BAC', 'MCD', 'CSCO', 'WMT',
-    'TMO', 'PFE', 'ABT', 'CRM', 'ACN', 'ADBE', 'DHR', 'NKE', 'TXN', 'NFLX',
-    'ORCL', 'UNP', 'PM', 'RTX', 'NEE', 'LOW', 'QCOM', 'INTC', 'LIN',
-    'BMY', 'CMCSA', 'AMGN', 'T', 'VZ', 'UPS', 'HON', 'COP', 'SBUX', 'IBM',
-    'GS', 'CAT', 'BA', 'MMM', 'DE', 'BLK', 'AXP', 'GILD', 'MS', 'CVS',
-    'MDLZ', 'GE', 'C', 'ADI', 'PLD', 'AMT', 'ISRG',
-    'ZTS', 'SYK', 'BKNG', 'ADP', 'MMC', 'SPGI', 'MO', 'CB', 'BDX',
-    'ETN', 'TJX', 'DUK', 'SO', 'CME', 'PGR', 'WM', 'CI',
-    'UNH', 'LLY', 'COST', 'AVGO', 'AMD',
+    # United States - Large Cap (all existed before 1995)
+    'AAPL', 'MSFT', 'JPM', 'JNJ', 'PG', 'XOM', 'HD',
+    'CVX', 'MRK', 'PEP', 'KO', 'BAC', 'MCD', 'WMT',
+    'PFE', 'ABT', 'NKE', 'TXN',
+    'ORCL', 'UNP', 'LOW', 'INTC',
+    'BMY', 'AMGN', 'T', 'HON', 'IBM',
+    'CAT', 'BA', 'MMM', 'DE', 'AXP', 'MS',
+    'GE', 'C', 'MO', 'BDX',
+    'ETN', 'TJX', 'DUK', 'SO', 'WM',
+    'LLY', 'DOW', 'EMR', 'FDX', 'GD', 'GIS',
+    'HAL', 'HES', 'HPQ', 'ITW', 'K', 'KMB',
+    'LMT', 'MDT', 'MET', 'NSC', 'PH', 'PNC',
+    'PRU', 'SLB', 'TGT', 'TRV', 'USB', 'WFC', 'WY',
+    'XRX', 'YUM', 'ZBH', 'AFL', 'AIG', 'ALL', 'AON',
+    'AVY', 'AEP', 'D', 'ED', 'EXC', 'F', 'GM',
+    'GLW', 'HIG', 'IP', 'KEY', 'L', 'LNC', 'MMC',
+    'NEM', 'NUE', 'OXY', 'PEG', 'PPG', 'PPL', 'ROK',
+    'SHW', 'STT', 'SWK', 'SYY', 'TEL', 'VLO', 'WHR',
 
-    # Japan (ADRs with long histories)
-    'TM', 'SONY', 'MUFG', 'SMFG', 'HMC', 'NTT', 'MFG',
+    # Japan (ADRs - established before 1995)
+    'TM', 'SONY', 'HMC',
 
-    # United Kingdom
-    'BP', 'SHEL', 'HSBC', 'GSK', 'AZN', 'UL', 'RIO', 'BHP', 'BTI',
-    'VOD', 'DEO',
+    # United Kingdom (established before 1995)
+    'BP', 'HSBC', 'UL', 'BHP', 'BTI', 'VOD',
 
     # Germany
-    'SAP', 'DB', 'SIEGY',
+    'SAP', 'DB',
 
     # France
-    'TTE', 'SNY',
+    'SNY',
 
     # Switzerland
-    'NSRGY', 'NVS', 'UBS',
+    'NVS', 'UBS',
 
-    # Netherlands
-    'ASML', 'ING',
-
-    # Canada
-    'TD', 'RY', 'BNS', 'CNQ', 'ENB', 'CP', 'CNI', 'TRP', 'BMO', 'CM',
-    'SU', 'MFC', 'BCE',
-
-    # Taiwan
-    'TSM',
+    # Canada (established before 1995)
+    'TD', 'RY', 'BNS', 'BMO', 'CM', 'BCE',
 ]
 
 
@@ -135,8 +134,8 @@ def get_date_info():
     return {
         'start': START_DATE,
         'end': END_DATE,
-        'first_beta_date': '2017-01-01',  # 60 months after START_DATE
-        'note': 'URTH inception: 2012-01, first valid beta: 2017-01'
+        'first_beta_date': '2000-01-01',  # 60 months after START_DATE (1995)
+        'note': 'Beta estimation: 1995-2000, BAB portfolios: 2000-2014'
     }
 
 
@@ -147,4 +146,4 @@ if __name__ == '__main__':
     print(f"Date Range: {START_DATE} to {END_DATE}")
     print(f"Rolling Window: {ROLLING_WINDOW} months")
     print(f"Number of Tickers: {len(MSCI_WORLD_TICKERS)}")
-    print(f"First valid beta date: ~2017-01 (60 months after URTH inception)")
+    print(f"First valid beta date: 2000-01 (60 months after 1995)")
